@@ -8,3 +8,4 @@ TESTS := tests/u256_test.ab tests/vectors_test.ab tests/bitcoin_test.ab tests/ev
 test:
 	! grep -rnE '^import "abla/http/tls|\b(f32|f64)\b' src
 	$(COMPILER) test $(TESTS)
+	tests/subpaths.sh $(COMPILER)

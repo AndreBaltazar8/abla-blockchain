@@ -24,6 +24,29 @@ fun main: int {
 
 The library itself doesn't import TLS. The clients take any `HttpClient`, so a program that only needs hashes or addresses needs no OpenSSL.
 
+## Importing a part of it
+
+`abla-blockchain` is the whole library. A subpath is one folder, or one module of it, and only what it needs gets compiled (ablac 0.2.29 or later):
+
+```abla fragment
+import github("AndreBaltazar8/abla-blockchain/evm")
+import github("AndreBaltazar8/abla-blockchain/hash/keccak")
+```
+
+All of a package's subpaths are one locked revision, so a program can use several. What can be imported is listed under `[exports]` in `abla.toml`, and anything else is refused with `E_PACKAGE_SUBPATH_PRIVATE`:
+
+| Subpath |
+|---|
+| `uint256` |
+| `hash`, `hash/keccak`, `hash/ripemd160` |
+| `curve`, `curve/secp256k1`, `curve/modular` |
+| `signature`, `signature/ecdsa`, `signature/ed25519` |
+| `encoding`, `encoding/base58`, `encoding/bech32` |
+| `net`, `net/endpoint` |
+| `bitcoin`, `bitcoin/address`, `bitcoin/bip32`, `bitcoin/descriptor`, `bitcoin/esplora`, `bitcoin/raw` |
+| `evm`, `evm/address`, `evm/erc20`, `evm/rlp`, `evm/rpc` |
+| `stellar`, `stellar/horizon`, `stellar/strkey`, `stellar/xdr` |
+
 ## What's in it
 
 | Folder | |
@@ -42,4 +65,4 @@ An amount is an integer in the asset's smallest unit, always: `U256` for wei, `i
 
 ## Testing
 
-`make test` needs only the compiler. Vectors come from the specifications, and client tests replay answers captured from real testnets: see [SOURCES.md](SOURCES.md).
+`make test` needs only the compiler and git; `tests/subpaths.sh` imports each subpath from a copy of the working tree. Vectors come from the specifications, and client tests replay answers captured from real testnets: see [SOURCES.md](SOURCES.md).
