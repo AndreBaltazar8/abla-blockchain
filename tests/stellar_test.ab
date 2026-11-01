@@ -1,0 +1,47 @@
+import "abla/test"
+import "abla/text"
+import "abla/http"
+import "abla/json"
+import "abla/sys/linux"
+import "../src/blockchain.ab"
+
+// Horizon, replaying real testnet payments.
+fun main: int {
+    val real = jsonParse(linuxReadFile("tests/fixtures/stellar/real.json", 8388608), jsonPermissiveLimits).value
+    val account = real.getString("account")
+    val records = jsonStringify(jsonObject(["_embedded"], [jsonObject(["records"], [real.get("records")])]))
+    val client = horizonClient(ChainEndpoint({ request: HttpRequest ->
+        if (request.path == "/") return HttpClientResult(HttpResponse(200, [], jsonStringify(real.get("root"))), true, true)
+        if (request.path.startsWith("/accounts/$account/")) return HttpClientResult(HttpResponse(200, [], records), true, true)
+        HttpClientResult(HttpResponse(404, [], "{}"), true, true)
+    }, ""))
+    expectEqual(client.latestLedger().latest, real.get("root").getInt("history_latest_ledger"), "ledger")
+    val page = client.accountPayments(account, "0")
+    expect(page.ok, "payments")
+    expectEqual(page.records.size, real.get("records").size(), "all of them")
+    var plain = false
+    var issued = false
+    var created = false
+    for (i in 0 until page.records.size) {
+        val p = page.records[i]
+        val r = real.get("records").at(i)
+        expectEqual(p.transactionHash, r.getString("transaction_hash"), "hash")
+        expectEqual(p.ledger, r.get("transaction").getInt("ledger"), "ledger")
+        expect(p.time > 1700000000, "time")
+        if (p.kind == "payment" && p.asset == "native" && p.memo != "") plain = true
+        if (p.asset.startsWith("CGT:")) issued = true
+        if (p.kind == "create_account") created = p.to == account && p.hasAmount
+    }
+    expect(plain && issued && created, "each kind, from real ones")
+    val missing = client.accountPayments("GNONE", "0")
+    expect(missing.ok && missing.missing, "an account Horizon doesn't know")
+    expectEqual(stellarAmount("1.2345678").value.toDecimal(), "12345678", "stroops")
+    expect(!stellarAmount("1.5").ok && !stellarAmount("x").ok, "seven decimals")
+    expectEqual(stellarTime("1970-01-02T00:00:01Z"), 86401, "time")
+    expectEqual(stellarTime("2024-02-29T12:00:00Z"), 1709208000, "a leap day")
+    expectEqual(stellarTime("nope"), 0, "not a time")
+    expectEqual(stellarLedgerCursor(2), "8589934592", "a ledger's cursor")
+    expectEqual(sep7PayUri("G", "1.5", "native", "m"), "web+stellar:pay?destination=G&amount=1.5&memo=m&memo_type=MEMO_TEXT", "SEP-7")
+    expectEqual(sep7PayUri("G", "1", "A:I", ""), "web+stellar:pay?destination=G&amount=1&asset_code=A&asset_issuer=I", "SEP-7 with an asset")
+    testsPassed()
+}

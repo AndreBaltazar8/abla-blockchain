@@ -1,0 +1,57 @@
+import "abla/test"
+import "../src/uint256/u256.ab"
+
+fun d(text: string): U256 = u256FromDecimal(text).value
+fun max(): U256 = d("115792089237316195423570985008687907853269984665640564039457584007913129639935")
+fun main: int {
+    expectEqual(max().toDecimal(), "115792089237316195423570985008687907853269984665640564039457584007913129639935", "2^256-1 decimal round trip")
+    expect(!u256FromDecimal("115792089237316195423570985008687907853269984665640564039457584007913129639936").ok, "2^256 refused")
+    expectEqual(max().toHex(), "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "hex")
+    expectEqual(u256Zero().toDecimal(), "0", "zero")
+    expectEqual(u256Zero().toHex(), "0x0", "hex zero")
+    expect(!u256FromDecimal("").ok && !u256FromDecimal("-1").ok && !u256FromDecimal("1.5").ok && !u256FromDecimal(" 1").ok && !u256FromDecimal("1e3").ok, "only digits")
+    expectEqual(u256FromDecimal("0007").value.toDecimal(), "7", "leading zeros")
+    expectEqual(u256FromHex("0xde0b6b3a7640000").value.toDecimal(), "1000000000000000000", "hex quantity")
+    expect(!u256FromHex("0x1ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").ok, "33 bytes of hex refused")
+    expect(!u256FromHex("0xg").ok && !u256FromHex("0x").ok, "bad hex refused")
+    // Checked: what doesn't fit says so.
+    expect(!u256Add(max(), u256FromInt(1)).ok, "add overflow")
+    expect(!u256Sub(u256Zero(), u256FromInt(1)).ok, "sub underflow")
+    expect(!u256Mul(max(), u256FromInt(2)).ok, "mul overflow")
+    expectEqual(u256Add(d("18446744073709551615"), u256FromInt(1)).value.toDecimal(), "18446744073709551616", "carry across limbs")
+    expectEqual(u256Sub(d("18446744073709551616"), u256FromInt(1)).value.toDecimal(), "18446744073709551615", "borrow across limbs")
+    expectEqual(u256Mul(d("340282366920938463463374607431768211455"), d("340282366920938463463374607431768211457")).value.toDecimal(), "115792089237316195423570985008687907853269984665640564039457584007913129639935", "(2^128-1)(2^128+1)")
+    // Wrapping, as the EVM.
+    expectEqual(u256WrappingAdd(max(), u256FromInt(1)).toDecimal(), "0", "ADD wraps")
+    expectEqual(u256WrappingSub(u256Zero(), u256FromInt(1)).toDecimal(), max().toDecimal(), "SUB wraps")
+    expectEqual(u256WrappingMul(max(), max()).toDecimal(), "1", "MUL wraps")
+    expectEqual(u256Saturating(u256FromInt(3), u256FromInt(5)).toDecimal(), "0", "saturating")
+    // Shifts, order, bytes.
+    expectEqual(u256ShiftLeft(u256FromInt(1), 255).toHex(), "0x8000000000000000000000000000000000000000000000000000000000000000", "shift left")
+    expectEqual(u256ShiftRight(u256ShiftLeft(u256FromInt(5), 100), 100).toDecimal(), "5", "shift right")
+    expectEqual(u256ShiftLeft(u256FromInt(1), 256).toDecimal(), "0", "shift out")
+    expect(u256Less(d("4294967296"), d("4294967297")) && u256Compare(max(), max()) == 0 && !u256Less(max(), u256Zero()), "compare")
+    expectEqual(u256FromBytes(max().toBytes()).value.toDecimal(), max().toDecimal(), "bytes round trip")
+    expectEqual(max().toBytes().size, 32, "32 bytes")
+    expectEqual(max().bitLength(), 256, "bit length")
+    expectEqual(u256FromInt(9223372036854775807).toDecimal(), "9223372036854775807", "largest int")
+    // Division.
+    val division = u256DivMod(max(), d("1000000000000000000"))
+    expectEqual(division.quotient.toDecimal(), "115792089237316195423570985008687907853269984665640564039457", "quotient")
+    expectEqual(division.remainder.toDecimal(), "584007913129639935", "remainder")
+    expectEqual(u256DivMod(max(), max()).quotient.toDecimal(), "1", "self division")
+    expectEqual(u256DivMod(u256FromInt(5), u256FromInt(9)).remainder.toDecimal(), "5", "small over big")
+    expectEqual(u256DivMod(max(), d("57896044618658097711785492504343953926634992332820282019728792003956564819968")).quotient.toDecimal(), "1", "divisor with its top bit set")
+    expectEqual(u256DivMod(max(), d("57896044618658097711785492504343953926634992332820282019728792003956564819968")).remainder.toDecimal(), "57896044618658097711785492504343953926634992332820282019728792003956564819967", "remainder with a top bit")
+    // Half up.
+    expectEqual(u256MulDivPowerOfTen(u256FromInt(15), u256FromInt(1), 1).value.toDecimal(), "2", "1.5 rounds up")
+    expectEqual(u256MulDivPowerOfTen(u256FromInt(14), u256FromInt(1), 1).value.toDecimal(), "1", "1.4 rounds down")
+    expectEqual(u256MulDivPowerOfTen(d("1500000000000000000"), u256FromInt(250000), 18).value.toDecimal(), "375000", "1.5 ETH at 2500.00 is 3750.00, in cents with the rate in 2 decimals")
+    expect(!u256MulDivPowerOfTen(max(), u256FromInt(2), 1).ok, "muldiv overflow says so")
+    expectEqual(u256FormatUnits(d("1500000000000000000"), 18), "1.5", "units")
+    expectEqual(u256FormatUnits(d("1"), 18), "0.000000000000000001", "wei")
+    expectEqual(u256FormatUnits(d("100000000"), 8), "1", "one bitcoin")
+    expectEqual(u256FormatUnits(d("0"), 7), "0", "nothing")
+    expectEqual(u256FormatUnits(d("12"), 0), "12", "no decimals")
+    testsPassed()
+}

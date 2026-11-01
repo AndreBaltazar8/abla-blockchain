@@ -1,0 +1,137 @@
+import "abla/crypto"
+import "../uint256/u256.ab"
+
+// secp256k1 for public keys: nothing here takes a secret. Timing doesn't matter, since every input is
+// public, so it's plain double-and-add with no attempt at constant time. Field elements are U256 below p.
+
+private fun secpPrime(): U256 = u256FromHex("fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f").value
+fun secpOrder(): U256 = u256FromHex("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141").value
+private fun secpGx(): U256 = u256FromHex("79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798").value
+private fun secpGy(): U256 = u256FromHex("483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8").value
+
+// 2^256 mod p is 977 + 2^32, so what's above 256 bits folds in with that factor.
+private fun fieldFold(limbs: array<int>): U256 {
+    var low: array<int> = u256Limbs(limbs, 0, 8)
+    var rest = u256Limbs(limbs, 8, limbs.size)
+    for (pass in 0 until 2) {
+        val sum: array<int> = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        var carry = u64(0)
+        for (i in 0 until 10) {
+            val a = if (i < 8) u64(low[i]) else u64(0)
+            val b = if (i < rest.size) u64(rest[i]) * u64(977) else u64(0)
+            val c = if (i >= 1 && i - 1 < rest.size) u64(rest[i - 1]) else u64(0)
+            val total = a + b + c + carry
+            sum[i] = int(total & u64(4294967295))
+            carry = total >> 32
+        }
+        sum[10] = int(carry)
+        low = u256Limbs(sum, 0, 8)
+        rest = u256Limbs(sum, 8, 11)
+    }
+    var out = U256(low)
+    val p = secpPrime()
+    if (rest[0] != 0 || rest[1] != 0 || rest[2] != 0) {
+        // At most one more 2^256 can remain.
+        out = u256WrappingAdd(out, u256FromInt(4294968273))
+    }
+    while (!u256Less(out, p)) out = u256WrappingSub(out, p)
+    out
+}
+private fun fieldAdd(a: U256, b: U256): U256 {
+    val sum = u256Carrying(a, b)
+    val p = secpPrime()
+    if (!sum.ok || !u256Less(sum.value, p)) return u256WrappingSub(sum.value, p)
+    sum.value
+}
+private fun fieldSub(a: U256, b: U256): U256 {
+    val difference = u256Borrowing(a, b)
+    if (!difference.ok) return u256WrappingAdd(difference.value, secpPrime())
+    difference.value
+}
+private fun fieldMul(a: U256, b: U256): U256 = fieldFold(u256Product(a.w, b.w))
+private fun fieldSquare(a: U256): U256 = fieldMul(a, a)
+private fun fieldPower(base: U256, exponent: U256): U256 {
+    var out = u256FromInt(1)
+    var i = exponent.bitLength() - 1
+    while (i >= 0) {
+        out = fieldSquare(out)
+        if (exponent.bit(i) == 1) out = fieldMul(out, base)
+        i = i - 1
+    }
+    out
+}
+private fun fieldInverse(a: U256): U256 = fieldPower(a, u256WrappingSub(secpPrime(), u256FromInt(2)))
+
+class SecpPoint(val infinity: bool, val x: U256, val y: U256)
+private class SecpJacobian(val infinity: bool, val x: U256, val y: U256, val z: U256)
+private fun secpInfinity(): SecpJacobian = SecpJacobian(true, u256Zero(), u256FromInt(1), u256Zero())
+private fun jacobianDouble(p: SecpJacobian): SecpJacobian {
+    if (p.infinity || p.y.isZero()) return secpInfinity()
+    val yy = fieldSquare(p.y)
+    val s = fieldMul(fieldMul(u256FromInt(4), p.x), yy)
+    val xx = fieldSquare(p.x)
+    val m = fieldAdd(fieldAdd(xx, xx), xx)
+    val x = fieldSub(fieldSquare(m), fieldAdd(s, s))
+    val yyyy = fieldSquare(yy)
+    val y = fieldSub(fieldMul(m, fieldSub(s, x)), fieldMul(u256FromInt(8), yyyy))
+    SecpJacobian(false, x, y, fieldMul(fieldAdd(p.y, p.y), p.z))
+}
+private fun jacobianAddAffine(p: SecpJacobian, qx: U256, qy: U256): SecpJacobian {
+    if (p.infinity) return SecpJacobian(false, qx, qy, u256FromInt(1))
+    val zz = fieldSquare(p.z)
+    val u2 = fieldMul(qx, zz)
+    val s2 = fieldMul(qy, fieldMul(zz, p.z))
+    val h = fieldSub(u2, p.x)
+    val r = fieldSub(s2, p.y)
+    if (h.isZero()) {
+        if (r.isZero()) return jacobianDouble(p)
+        return secpInfinity()
+    }
+    val hh = fieldSquare(h)
+    val hhh = fieldMul(hh, h)
+    val v = fieldMul(p.x, hh)
+    val x = fieldSub(fieldSub(fieldSquare(r), hhh), fieldAdd(v, v))
+    val y = fieldSub(fieldMul(r, fieldSub(v, x)), fieldMul(p.y, hhh))
+    SecpJacobian(false, x, y, fieldMul(p.z, h))
+}
+private fun jacobianToPoint(p: SecpJacobian): SecpPoint {
+    if (p.infinity) return SecpPoint(true, u256Zero(), u256Zero())
+    val inverse = fieldInverse(p.z)
+    val ii = fieldSquare(inverse)
+    SecpPoint(false, fieldMul(p.x, ii), fieldMul(p.y, fieldMul(ii, inverse)))
+}
+fun secpGenerator(): SecpPoint = SecpPoint(false, secpGx(), secpGy())
+// scalar * point, then add. This is what a BIP32 public child needs: IL * G + K.
+fun secpMultiplyAdd(scalar: U256, point: SecpPoint, addend: SecpPoint): SecpPoint {
+    var out = secpInfinity()
+    var i = scalar.bitLength() - 1
+    while (i >= 0) {
+        out = jacobianDouble(out)
+        if (scalar.bit(i) == 1) out = jacobianAddAffine(out, point.x, point.y)
+        i = i - 1
+    }
+    if (!addend.infinity) out = jacobianAddAffine(out, addend.x, addend.y)
+    jacobianToPoint(out)
+}
+fun secpOnCurve(p: SecpPoint): bool {
+    if (p.infinity) return false
+    val right = fieldAdd(fieldMul(fieldSquare(p.x), p.x), u256FromInt(7))
+    u256Equal(fieldSquare(p.y), right)
+}
+// 02/03 + x. Infinity when it isn't a point on the curve.
+fun secpDecompress(key: string): SecpPoint {
+    val none = SecpPoint(true, u256Zero(), u256Zero())
+    if (key.size != 33 || (key[0] != 2 && key[0] != 3)) return none
+    val x = u256FromBytes(key.slice(1, 33)).value
+    if (!u256Less(x, secpPrime())) return none
+    val right = fieldAdd(fieldMul(fieldSquare(x), x), u256FromInt(7))
+    // p is 3 mod 4, so a root is right^((p+1)/4).
+    val exponent = u256ShiftRight(u256Carrying(secpPrime(), u256FromInt(1)).value, 2)
+    var y = fieldPower(right, exponent)
+    if (!u256Equal(fieldSquare(y), right)) return none
+    if ((y.w[0] & 1) != (key[0] & 1)) y = fieldSub(u256Zero(), y)
+    SecpPoint(false, x, y)
+}
+fun secpCompress(p: SecpPoint): string = "${cryptoByte(if ((p.y.w[0] & 1) == 1) 3 else 2)}${p.x.toBytes()}"
+fun secpUncompressedXY(p: SecpPoint): string = "${p.x.toBytes()}${p.y.toBytes()}"
+private fun cryptoByte(value: int): string = cryptoByteString([value])

@@ -1,0 +1,57 @@
+import "abla/crypto"
+import "../encoding/bech32.ab"
+
+// StrKey: a version byte, the payload and a little-endian CRC16-XModem, in Base32 with no padding.
+fun crc16XModem(value: string): int {
+    var crc = 0
+    for (i in 0 until value.size) {
+        crc = crc ^ (value[i] << 8)
+        for (bit in 0 until 8) {
+            crc = if ((crc & 32768) != 0) ((crc << 1) ^ 4129) & 65535 else (crc << 1) & 65535
+        }
+    }
+    crc
+}
+private fun base32Alphabet(): string = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+fun strkeyEncode(version: int, payload: string): string {
+    val body = "${cryptoByteString([version])}$payload"
+    val crc = crc16XModem(body)
+    val full = "$body${cryptoByteString([crc & 255, crc >> 8])}"
+    val alphabet = base32Alphabet()
+    val out: array<int> = []
+    for (five in bech32ConvertBits(full, 8, 5, true)) out.append(alphabet[five])
+    cryptoByteString(out)
+}
+class StrkeyDecoded(val ok: bool, val version: int, val payload: string)
+fun strkeyDecode(text: string): StrkeyDecoded {
+    val bad = StrkeyDecoded(false, 0, "")
+    if (text.size % 8 == 1 || text.size % 8 == 3 || text.size % 8 == 6 || text.size < 5) return bad
+    val alphabet = base32Alphabet()
+    val out: array<int> = []
+    var accumulator = 0
+    var bits = 0
+    for (i in 0 until text.size) {
+        var digit = -1
+        for (d in 0 until 32) if (alphabet[d] == text[i]) digit = d
+        if (digit < 0) return bad
+        accumulator = (accumulator << 5) | digit
+        bits = bits + 5
+        if (bits >= 8) {
+            bits = bits - 8
+            out.append((accumulator >> bits) & 255)
+        }
+        accumulator = accumulator & ((1 << bits) - 1)
+    }
+    if (accumulator != 0 || out.size < 3) return bad
+    val raw = cryptoByteString(out)
+    val body = raw.slice(0, raw.size - 2)
+    val crc = crc16XModem(body)
+    if (out[out.size - 2] != (crc & 255) || out[out.size - 1] != (crc >> 8)) return bad
+    StrkeyDecoded(true, out[0], raw.slice(1, raw.size - 2))
+}
+// A Stellar account, G...: version 6 << 3, 32 bytes.
+fun stellarAccountValid(text: string): bool {
+    if (text.size != 56) return false
+    val decoded = strkeyDecode(text)
+    decoded.ok && decoded.version == 48 && decoded.payload.size == 32
+}

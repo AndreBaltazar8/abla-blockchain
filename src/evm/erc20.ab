@@ -1,0 +1,25 @@
+import "abla/json"
+import "../uint256/u256.ab"
+import "address.ab"
+import "rpc.ab"
+
+// ERC-20 as it appears in logs, and EIP-681 payment links.
+
+// keccak256("Transfer(address,address,uint256)"), checked in the tests.
+fun erc20TransferTopic(): string = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+class Erc20Transfer(val token: string, val from: string, val to: string, val amount: U256)
+// Null for what isn't one, as an ERC-721's transfer has the same topic with the token id as a fourth, and no amount.
+fun erc20DecodeTransfer(log: EvmLog): Erc20Transfer? {
+    if (log.topics.size != 3 || log.topics[0] != erc20TransferTopic() || log.removed || log.data.size != 66) return null
+    val amount = u256FromHex(log.data)
+    if (!amount.ok) return null
+    Erc20Transfer(evmLower(log.address), evmLower(evmTopicAddress(log.topics[1])), evmLower(evmTopicAddress(log.topics[2])), amount.value)
+}
+// The filter for transfers to any of these addresses, from any token, for logsInBlock.
+fun erc20TransfersToFilter(addresses: array<string>): string {
+    val topics: array<Json> = []
+    for (a in addresses) topics.append(jsonString(evmAddressTopic(a)))
+    jsonStringify(jsonArray([jsonString(erc20TransferTopic()), jsonNull(), jsonArray(topics)]))
+}
+fun eip681Native(chainId: int, address: string, wei: U256): string = "ethereum:$address@$chainId?value=${wei.toDecimal()}"
+fun eip681Erc20(chainId: int, token: string, to: string, amount: U256): string = "ethereum:$token@$chainId/transfer?address=$to&uint256=${amount.toDecimal()}"

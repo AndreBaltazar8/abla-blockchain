@@ -1,0 +1,74 @@
+import "abla/test"
+import "abla/crypto"
+import "abla/http"
+import "abla/json"
+import "abla/sys/linux"
+import "../src/blockchain.ab"
+
+// Addresses and descriptors from the public Hardhat mnemonic, by an independent BIP32 (tools/vectors.py). Esplora replaying a real signet transaction.
+val tpub84 = "tpubDCTawRj1voCsGHoKQopGdxi1UXEfy8eeogsbA7SxDL1j7tvTfwdF6jQNSneAQw5a2x29XY6PWbnKMx68oM7BYoew8eRySvVaLZxkrBzWr4A"
+val tpub44 = "tpubDCxfYwmzJPiUsqJ7KgLWNTr1X3wc1Jm84rbCorAF6o4mhVFMkKKJKMwji1ktUxNcaoMvYiMMmvBkptVp2Yj5KbYJ5M6emVvDnmt6hUFVsmE"
+val tpub49 = "tpubDDKQox3avr2irtLaHRXWeXfTGWMx6HmkDVEV1gHRQsVGzkUonWrTcbcyngPY3NEK9isXaZ1rbdTRDmqH8fWpu5ELFR4VSoqGGTEpYNkbiWh"
+fun derived(text: string, path: array<int>): string {
+    val root = bip32Parse(text).key
+    if (root == null) return ""
+    val child = bip32Path(root, path).key
+    if (child == null) return ""
+    child.key
+}
+fun main: int {
+    val net = bitcoinTestnet()
+    expectEqual(bitcoinAddress(net, "wpkh", derived(tpub84, [0, 0])), "tb1qquv9lg5g2r4jkr0ahun0ddfg5xntxjelvmc7t8", "P2WPKH")
+    expectEqual(bitcoinAddress(net, "wpkh", derived(tpub84, [0, 5])), "tb1qar6hlpggnekgcmmwzadv9cxst3pkp7u0986j35", "P2WPKH, index 5")
+    expectEqual(bitcoinAddress(net, "pkh", derived(tpub44, [0, 0])), "n118YqfT1hk8uvXcqcy4fwLDfVQfJpQTaS", "P2PKH")
+    expectEqual(bitcoinAddress(net, "sh-wpkh", derived(tpub49, [0, 0])), "2N2bjA9C1maBSJQJgeLGgcfLJvmEdTL7xXW", "P2SH-P2WPKH")
+    expect(bitcoinAddressValid(net, "tb1qquv9lg5g2r4jkr0ahun0ddfg5xntxjelvmc7t8") && bitcoinAddressValid(net, "n118YqfT1hk8uvXcqcy4fwLDfVQfJpQTaS") && bitcoinAddressValid(net, "2N2bjA9C1maBSJQJgeLGgcfLJvmEdTL7xXW"), "valid on its network")
+    expect(!bitcoinAddressValid(net, "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4") && !bitcoinAddressValid(bitcoinMainnet(), "n118YqfT1hk8uvXcqcy4fwLDfVQfJpQTaS") && !bitcoinAddressValid(net, "nonsense"), "not on another")
+    expectEqual(bip21Uri("addr", "0.00001"), "bitcoin:addr?amount=0.00001", "BIP-21")
+    // BIP-380's checksum, and what's parsed.
+    expectEqual(descriptorChecksum("raw(deadbeef)"), "89f8spxm", "BIP-380 vector")
+    val full = descriptorParse("wpkh([d34db33f/84h/1h/0h]$tpub84/0/*)#r355a49d")
+    expect(full.ok, "with origin and checksum")
+    expectEqual(full.scriptType, "wpkh", "script")
+    expectEqual(full.key, tpub84, "key")
+    expectEqual(full.path.size, 1, "path")
+    expectEqual(descriptorParse("sh(wpkh($tpub49/1/*))").scriptType, "sh-wpkh", "nested")
+    expectEqual(descriptorParse("pkh($tpub44/0/*)").scriptType, "pkh", "legacy")
+    expectEqual(descriptorParse("wpkh($tpub84/0/*)#aaaaaaaa").code, "descriptor_checksum", "bad checksum")
+    expectEqual(descriptorParse("wpkh($tpub84/0h/*)").code, "hardened_path", "hardened step")
+    expectEqual(descriptorParse("wpkh($tpub84/0/1)").code, "descriptor_invalid", "no wildcard")
+    expectEqual(descriptorParse("tr($tpub84/0/*)").code, "descriptor_unsupported", "not supported yet")
+    // A real mined signet transaction, through the client.
+    val real = jsonParse(linuxReadFile("tests/fixtures/bitcoin/real.json", 8388608), jsonPermissiveLimits).value
+    val address = real.getString("address")
+    val txs = jsonStringify(real.get("txs"))
+    val tx = real.get("txs").at(0)
+    val client = esploraClient(ChainEndpoint({ request: HttpRequest ->
+        var body = "nope"
+        var status = 404
+        if (request.path == "/api/blocks/tip/height") {
+            status = 200
+            body = "${real.getInt("tip")}"
+        }
+        if (request.path == "/api/address/$address/txs") {
+            status = 200
+            body = txs
+        }
+        HttpClientResult(HttpResponse(status, [], body), true, true)
+    }, "/api"))
+    expectEqual(client.tipHeight().height, real.getInt("tip"), "tip")
+    val read = client.addressTransactions(address)
+    expect(read.ok, "list read")
+    val first = read.transactions[0]
+    expectEqual(first.txid, tx.getString("txid"), "txid")
+    expect(first.confirmed, "mined")
+    expectEqual(first.height, tx.get("status").getInt("block_height"), "height")
+    expectEqual(first.blockHash, tx.get("status").getString("block_hash"), "hash")
+    expectEqual(first.fee, tx.get("fee").asInt(), "fee")
+    expectEqual(first.outputs[real.getInt("vout")].address, address, "output's address")
+    expectEqual(first.outputs[real.getInt("vout")].value, tx.get("vout").at(real.getInt("vout")).get("value").asInt(), "output's value")
+    expect(!client.addressTransactions("other").ok, "an error says so")
+    val down = esploraClient(ChainEndpoint({ request: HttpRequest -> HttpClientResult(HttpResponse(0, [], ""), false, false) }, ""))
+    expect(!down.tipHeight().ok, "no answer")
+    testsPassed()
+}

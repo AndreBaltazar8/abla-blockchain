@@ -1,0 +1,28 @@
+import "abla/http"
+import "abla/json"
+
+// How the chain clients reach a node. They take any HTTP client, so that this library doesn't need TLS, and so OpenSSL, unless you do:
+//
+//     import "abla/http/tls"
+//     val horizon = horizonClient(chainEndpoint(httpsClient("horizon-testnet.stellar.org", 443, 16777216, 15000)))
+class ChainEndpoint(val exchange: (HttpRequest) -> HttpClientResult, val prefix: string)
+fun chainEndpoint(client: HttpClient, prefix: string = ""): ChainEndpoint = ChainEndpoint({ request: HttpRequest -> client.send(request) }, prefix)
+// `status` is 0 when there was no answer. `message` says what went wrong when not ok.
+class ChainReply(val ok: bool, val status: int, val message: string, val value: Json, val body: string)
+private fun chainHeaders(contentType: string): array<HttpHeader> {
+    val all: array<HttpHeader> = [HttpHeader("Accept", "application/json"), HttpHeader("User-Agent", "abla-blockchain")]
+    if (contentType != "") all.append(HttpHeader("Content-Type", contentType))
+    all
+}
+fun ChainEndpoint.send(method: string, path: string, body: string = "", contentType: string = ""): ChainReply {
+    val exchange = this.exchange
+    val full = "${this.prefix}$path"
+    val result = exchange(httpRequest(method, if (full == "") "/" else full, body, chainHeaders(contentType)))
+    if (!result.succeeded || !result.complete) return ChainReply(false, 0, "no complete answer", jsonNull(), "")
+    val status = result.response.status
+    if (status < 200 || status >= 300) return ChainReply(false, status, "HTTP $status", jsonNull(), result.response.body)
+    // Real blocks and busy addresses pass the parser's default 1 MB. The client's own limit bounds the reply.
+    val parsed = jsonParse(result.response.body, jsonPermissiveLimits)
+    if (!parsed.succeeded) return ChainReply(false, status, "the answer isn't JSON", jsonNull(), result.response.body)
+    ChainReply(true, status, "", parsed.value, result.response.body)
+}

@@ -1,0 +1,108 @@
+import "abla/crypto"
+
+// Bech32 (BIP-173) and Bech32m (BIP-350), and native segwit addresses in them.
+
+private fun bech32Charset(): string = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+private fun bech32Polymod(values: array<int>): int {
+    val generators = [996825010, 642813549, 513874426, 1027748829, 705979059]
+    var check = 1
+    for (value in values) {
+        val top = check >> 25
+        check = ((check & 33554431) << 5) ^ value
+        for (i in 0 until 5) if (((top >> i) & 1) == 1) check = check ^ generators[i]
+    }
+    check
+}
+private fun bech32HrpExpand(hrp: string): array<int> {
+    val out: array<int> = []
+    for (i in 0 until hrp.size) out.append(hrp[i] >> 5)
+    out.append(0)
+    for (i in 0 until hrp.size) out.append(hrp[i] & 31)
+    out
+}
+private fun bech32Encode(hrp: string, data: array<int>, constant: int): string {
+    val values = bech32HrpExpand(hrp)
+    for (d in data) values.append(d)
+    for (i in 0 until 6) values.append(0)
+    val check = bech32Polymod(values) ^ constant
+    val charset = bech32Charset()
+    val out: array<int> = []
+    for (d in data) out.append(charset[d])
+    for (i in 0 until 6) out.append(charset[(check >> (5 * (5 - i))) & 31])
+    "${hrp}1${cryptoByteString(out)}"
+}
+fun bech32ConvertBits(data: string, from: int, to: int, pad: bool): array<int> {
+    val out: array<int> = []
+    var accumulator = 0
+    var bits = 0
+    for (i in 0 until data.size) {
+        accumulator = (accumulator << from) | data[i]
+        bits = bits + from
+        while (bits >= to) {
+            bits = bits - to
+            out.append((accumulator >> bits) & ((1 << to) - 1))
+        }
+        accumulator = accumulator & ((1 << bits) - 1)
+    }
+    if (pad && bits > 0) out.append((accumulator << (to - bits)) & ((1 << to) - 1))
+    out
+}
+// A native segwit address: Bech32 for version 0, Bech32m past it (BIP-350).
+fun segwitEncode(hrp: string, version: int, program: string): string {
+    val data = [version]
+    for (five in bech32ConvertBits(program, 8, 5, true)) data.append(five)
+    bech32Encode(hrp, data, if (version == 0) 1 else 734539939)
+}
+class SegwitDecoded(val ok: bool, val hrp: string, val version: int, val program: string)
+fun segwitDecode(address: string): SegwitDecoded {
+    val bad = SegwitDecoded(false, "", 0, "")
+    val lower: array<int> = []
+    var hasLower = false
+    var hasUpper = false
+    var separator = -1
+    for (i in 0 until address.size) {
+        var c = address[i]
+        if (c < 33 || c > 126) return bad
+        if (c >= 97 && c <= 122) hasLower = true
+        if (c >= 65 && c <= 90) {
+            hasUpper = true
+            c = c + 32
+        }
+        if (c == 49) separator = i
+        lower.append(c)
+    }
+    if (hasLower && hasUpper) return bad
+    if (separator < 1 || separator + 7 > address.size || address.size > 90) return bad
+    val text = cryptoByteString(lower)
+    val hrp = text.slice(0, separator)
+    val charset = bech32Charset()
+    val data: array<int> = []
+    for (i in separator + 1 until text.size) {
+        var digit = -1
+        for (d in 0 until 32) if (charset[d] == text[i]) digit = d
+        if (digit < 0) return bad
+        data.append(digit)
+    }
+    val values = bech32HrpExpand(hrp)
+    for (d in data) values.append(d)
+    val check = bech32Polymod(values)
+    if (data.size < 7) return bad
+    val version = data[0]
+    if (version > 16 || check != (if (version == 0) 1 else 734539939)) return bad
+    val out: array<int> = []
+    var accumulator = 0
+    var bits = 0
+    for (at in 1 until data.size - 6) {
+        accumulator = (accumulator << 5) | data[at]
+        bits = bits + 5
+        if (bits >= 8) {
+            bits = bits - 8
+            out.append((accumulator >> bits) & 255)
+        }
+        accumulator = accumulator & ((1 << bits) - 1)
+    }
+    if (bits >= 5 || accumulator != 0) return bad
+    if (out.size < 2 || out.size > 40 || (version == 0 && out.size != 20 && out.size != 32)) return bad
+    SegwitDecoded(true, hrp, version, cryptoByteString(out))
+}
+

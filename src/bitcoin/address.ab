@@ -1,0 +1,27 @@
+import "abla/crypto"
+import "../encoding/base58.ab"
+import "../encoding/bech32.ab"
+import "../hash/ripemd160.ab"
+
+// Addresses from public keys, and checking them. A network is what its addresses start with.
+class BitcoinNetwork(val hrp: string, val p2pkhVersion: int, val p2shVersion: int)
+fun bitcoinMainnet(): BitcoinNetwork = BitcoinNetwork("bc", 0, 5)
+// Testnet and signet share these.
+fun bitcoinTestnet(): BitcoinNetwork = BitcoinNetwork("tb", 111, 196)
+
+// `script` is wpkh, pkh or sh-wpkh. `key` is a compressed public key.
+fun bitcoinAddress(network: BitcoinNetwork, script: string, key: string): string {
+    val digest = hash160(key)
+    if (script == "wpkh") return segwitEncode(network.hrp, 0, digest)
+    if (script == "pkh") return base58CheckEncode("${cryptoByteString([network.p2pkhVersion])}$digest")
+    val redeem = "${cryptoByteString([0, 20])}$digest"
+    base58CheckEncode("${cryptoByteString([network.p2shVersion])}${hash160(redeem)}")
+}
+fun bitcoinAddressValid(network: BitcoinNetwork, address: string): bool {
+    val segwit = segwitDecode(address)
+    if (segwit.ok) return segwit.hrp == network.hrp
+    val legacy = base58CheckDecode(address)
+    legacy.ok && legacy.value.size == 21 && (legacy.value[0] == network.p2pkhVersion || legacy.value[0] == network.p2shVersion)
+}
+// BIP-21. `amount` is in BTC as text: u256FormatUnits gives it from satoshis.
+fun bip21Uri(address: string, amount: string): string = "bitcoin:$address?amount=$amount"

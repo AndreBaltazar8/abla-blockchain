@@ -1,0 +1,97 @@
+import "abla/test"
+import "abla/crypto"
+import "abla/text"
+import "../src/blockchain.ab"
+
+fun hex(value: string): string = hexEncode(value)
+fun address(key: ExtendedPublicKey): string = evmAddressOfKey(key.key)
+fun xk(text: string): ExtendedPublicKey {
+    val key = bip32Parse(text).key
+    if (key == null) {
+        expect(false, "parse $text")
+        return ExtendedPublicKey(0, 0, "", 0, "", "")
+    }
+    key
+}
+fun under(root: ExtendedPublicKey, path: array<int>): ExtendedPublicKey {
+    val key = bip32Path(root, path).key
+    if (key == null) {
+        expect(false, "derive")
+        return root
+    }
+    key
+}
+fun step(from: string, index: int, expected: string): void {
+    val parsed = bip32Parse(from)
+    val parent = parsed.key
+    expect(parent != null, "BIP32 parse $from")
+    if (parent != null) {
+        expectEqual(bip32Serialize(parent), from, "BIP32 round trip")
+        val child = bip32Child(parent, index).key
+        expect(child != null, "BIP32 child")
+        if (child != null) expectEqual(bip32Serialize(child), expected, "BIP32 $from /$index")
+    }
+}
+fun main: int {
+    // Keccak-256: known answers, including at and around the 136-byte rate.
+    expectEqual(hex(keccak256("")), "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470", "keccak empty")
+    expectEqual(hex(keccak256("abc")), "4e03657aea45a94fc7d47ba826c8d667c0d1e6e33a64a036ec44f58fa12d6c45", "keccak abc")
+    expectEqual(hex(keccak256("Transfer(address,address,uint256)")), "ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", "keccak ERC-20 Transfer topic")
+    // RIPEMD-160, from the paper.
+    expectEqual(hex(ripemd160("")), "9c1185a5c5e9fc54612808977ee8f548b2258d31", "ripemd empty")
+    expectEqual(hex(ripemd160("abc")), "8eb208f7e05d987a9b044a8e98c6b087f15a0bfc", "ripemd abc")
+    expectEqual(hex(ripemd160("abcdefghijklmnopqrstuvwxyz")), "f71c27109c692c1b56bbdceb5b9d2865b3708dbc", "ripemd alphabet")
+    expectEqual(hex(ripemd160("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")), "12a053384a9c0c88e405a06c27dcf49ada62eb2b", "ripemd two blocks")
+    // Base58Check.
+    expectEqual(base58CheckEncode(hexDecode("00f54a5851e9372b87810a8e60cdd2e7cfd80b6e31")), "1PMycacnJaSqwwJqjawXBErnLsZ7RkXUAs", "base58check address")
+    expect(!base58CheckDecode("1PMycacnJaSqwwJqjawXBErnLsZ7RkXUAt").ok, "base58check wrong checksum")
+    expectEqual(hex(base58Decode("1").value), "00", "base58 leading zero")
+    // Bech32 and Bech32m: BIP-173 and BIP-350.
+    expectEqual(segwitEncode("bc", 0, hexDecode("751e76e8199196d454941c45d1b3a323f1433bd6")), "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4", "bech32 P2WPKH")
+    expect(segwitDecode("BC1QW508D6QEJXTDG4Y5R3ZARVARY0C5XW7KV8F3T4").ok, "bech32 upper case")
+    expectEqual(hex(segwitDecode("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4").program), "751e76e8199196d454941c45d1b3a323f1433bd6", "bech32 program")
+    expect(segwitDecode("bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0").ok, "bech32m taproot")
+    expect(segwitDecode("tb1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3q0sl5k7").ok, "bech32 P2WSH on testnet")
+    expect(!segwitDecode("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t5").ok, "bech32 wrong checksum")
+    expect(!segwitDecode("bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqh2y7hd").ok, "version 1 with Bech32's checksum")
+    // EIP-55: the EIP's own list.
+    for (good in ["0x52908400098527886E0F7030069857D2E4169EE7", "0x8617E340B3D01FA5F11F306F4090FD50E238070D", "0xde709f2102306220921060314715629080e2fb77", "0x27b1fdb04752bbc536007a920d24acb045561c26", "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed", "0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359", "0xdbF03B407c01E7cD3CBea99509d93f8DDDC8C6FB", "0xD1220A0cf47c7B9Be7A2E6BA89F429762e7b9aDb"]) {
+        expectEqual(evmAddressNormal(good), good, "EIP-55 $good")
+    }
+    expectEqual(evmAddressNormal("0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed"), "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed", "EIP-55 from lower case")
+    expectEqual(evmAddressNormal("0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAeD"), "", "EIP-55 wrong case refused")
+    expectEqual(evmAddressNormal("0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeA"), "", "EIP-55 short refused")
+    // StrKey: SEP-23's valid and invalid accounts.
+    expect(stellarAccountValid("GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ"), "strkey valid")
+    expect(stellarAccountValid("GA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQHES5"), "strkey valid 2")
+    for (bad in ["GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSG0", "GBPXX0A5N4JYPESHAADMQKBPWZWQDQ64ZV6ZL2S3LAGW4SY7NTCMWIVT", "GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGA", "G47QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVP4I", "SBU2RRGLXH3E5CQHTD3ODLDF2BWDCYUSSBLLZ5GNW7JXHDIYKXZWHOKR"]) expect(!stellarAccountValid(bad), "strkey refuses $bad")
+    expectEqual(crc16XModem("123456789"), 12739, "CRC-16/XMODEM check value")
+    expectEqual(strkeyEncode(48, strkeyDecode("GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ").payload), "GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ", "strkey round trip")
+    // secp256k1.
+    val g = secpGenerator()
+    expect(secpOnCurve(g), "G is on the curve")
+    expectEqual(hex(secpCompress(secpMultiplyAdd(u256FromInt(2), g, SecpPoint(true, u256Zero(), u256Zero())))), "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5", "2G")
+    expectEqual(hex(secpCompress(secpMultiplyAdd(u256FromInt(7), g, SecpPoint(true, u256Zero(), u256Zero())))), "025cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bc", "7G")
+    expectEqual(hex(secpCompress(secpMultiplyAdd(u256FromInt(1), g, g))), "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5", "G+G through the doubling path")
+    expect(secpMultiplyAdd(secpOrder(), g, SecpPoint(true, u256Zero(), u256Zero())).infinity, "n*G is infinity")
+    expect(secpDecompress(hexDecode("020000000000000000000000000000000000000000000000000000000000000005")).infinity, "x with no point refused")
+    // BIP32: test vector 1's public steps, m/0H -> /1 and m/0H/1/2H -> /2 -> /1000000000, and vector 2's m -> /0.
+    step("xpub68Gmy5EdvgibQVfPdqkBBCHxA5htiqg55crXYuXoQRKfDBFA1WEjWgP6LHhwBZeNK1VTsfTFUHCdrfp1bgwQ9xv5ski8PX9rL2dZXvgGDnw", 1, "xpub6ASuArnXKPbfEwhqN6e3mwBcDTgzisQN1wXN9BJcM47sSikHjJf3UFHKkNAWbWMiGj7Wf5uMash7SyYq527Hqck2AxYysAA7xmALppuCkwQ")
+    step("xpub6D4BDPcP2GT577Vvch3R8wDkScZWzQzMMUm3PWbmWvVJrZwQY4VUNgqFJPMM3No2dFDFGTsxxpG5uJh7n7epu4trkrX7x7DogT5Uv6fcLW5", 2, "xpub6FHa3pjLCk84BayeJxFW2SP4XRrFd1JYnxeLeU8EqN3vDfZmbqBqaGJAyiLjTAwm6ZLRQUMv1ZACTj37sR62cfN7fe5JnJ7dh8zL4fiyLHV")
+    step("xpub6FHa3pjLCk84BayeJxFW2SP4XRrFd1JYnxeLeU8EqN3vDfZmbqBqaGJAyiLjTAwm6ZLRQUMv1ZACTj37sR62cfN7fe5JnJ7dh8zL4fiyLHV", 1000000000, "xpub6H1LXWLaKsWFhvm6RVpEL9P4KfRZSW7abD2ttkWP3SSQvnyA8FSVqNTEcYFgJS2UaFcxupHiYkro49S8yGasTvXEYBVPamhGW6cFJodrTHy")
+    step("xpub661MyMwAqRbcFW31YEwpkMuc5THy2PSt5bDMsktWQcFF8syAmRUapSCGu8ED9W6oDMSgv6Zz8idoc4a6mr8BDzTJY47LJhkJ8UB7WEGuduB", 0, "xpub69H7F5d8KSRgmmdJg2KhpAK8SR3DjMwAdkxj3ZuxV27CprR9LgpeyGmXUbC6wb7ERfvrnKZjXoUmmDznezpbZb7ap6r1D3tgFxHmwMkQTPH")
+    expect(!bip32Child(xk("xpub661MyMwAqRbcFW31YEwpkMuc5THy2PSt5bDMsktWQcFF8syAmRUapSCGu8ED9W6oDMSgv6Zz8idoc4a6mr8BDzTJY47LJhkJ8UB7WEGuduB"), 2147483648).ok, "hardened child refused")
+    expectEqual(bip32Parse("xprv9s21ZrQH143K3QTDL4LXw2F7HEK3wJUD2nW2nRk4stbPy6cq3jPPqjiChkVvvNKmPGJxWUtg6LnF5kejMRNNU3TGtRBeJgk33yuGBxrMPHi").reason, "private_key", "xprv is named as private")
+    expectEqual(bip32Parse("tprv8ZgxMBicQKsPeDgjzdC36fs6bMjGApWDNLR9erAXMs5skhMv36j9MV5ecvfavji5khqjWaWSFhN3YcCUUdiKH6isR4Pwy3U5y5egddBr16m").reason, "private_key", "tprv is named as private")
+    expectEqual(bip32Parse("notakey").reason, "not_extended_key", "junk refused")
+    // BIP-84's published addresses, and Hardhat's well-known first account, from their account keys.
+    val zpub = xk("zpub6rFR7y4Q2AijBEqTUquhVz398htDFrtymD9xYYfG1m4wAcvPhXNfE3EfH1r1ADqtfSdVCToUG868RvUUkgDKf31mGDtKsAYz2oz2AGutZYs")
+    expectEqual(segwitEncode("bc", 0, hash160(under(zpub, [0, 0]).key)), "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu", "BIP-84 first receive")
+    expectEqual(segwitEncode("bc", 0, hash160(under(zpub, [0, 1]).key)), "bc1qnjg0jd8228aq7egyzacy8cys3knf9xvrerkf9g", "BIP-84 second receive")
+    expectEqual(segwitEncode("bc", 0, hash160(under(zpub, [1, 0]).key)), "bc1q8c6fshw2dlwun7ekn9qwf37cu2rn755upcp6el", "BIP-84 first change")
+    val hardhat = xk("xpub6Ce9NcJvTk36xtLSrJLZqE7wtgA5deCeYs7rSQtreh4cj6ByPtrg9sD7V2FNFLPnf8heNP3FGkeV9qwfzvZNSd54JoNXVsXFYSYwHsnJxqP")
+    expectEqual(address(under(hardhat, [0, 0])), "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266", "Hardhat account 0")
+    expectEqual(address(under(hardhat, [0, 1])), "0x70997970C51812dc3A010C7d01b50e0d17dc79C8", "Hardhat account 1")
+    expectEqual(address(under(hardhat, [0, 2])), "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC", "Hardhat account 2")
+    testsPassed()
+}

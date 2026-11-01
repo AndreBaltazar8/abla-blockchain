@@ -1,0 +1,57 @@
+import "abla/crypto"
+import "../uint256/u256.ab"
+import "../encoding/base58.ab"
+import "../hash/ripemd160.ab"
+import "../curve/secp256k1.ab"
+
+// BIP32 for extended public keys only. There's no function here that takes a private key, and a hardened
+// child can't be derived from a public one: the index is checked.
+
+class ExtendedPublicKey(val version: int, val depth: int, val fingerprint: string, val childNumber: int, val chainCode: string, val key: string)
+class ExtendedKeyParsed(val ok: bool, val reason: string, val key: ExtendedPublicKey?)
+class ExtendedChild(val ok: bool, val key: ExtendedPublicKey?)
+
+private fun bip32Uint32(value: int): string = cryptoByteString([(value >> 24) & 255, (value >> 16) & 255, (value >> 8) & 255, value & 255])
+private fun bip32ReadUint32(value: string, at: int): int = (value[at] << 24) | (value[at + 1] << 16) | (value[at + 2] << 8) | value[at + 3]
+
+// xpub, ypub, zpub; tpub, upub, vpub.
+fun bip32PublicVersions(): array<int> = [76067358, 77429938, 78792518, 70617039, 71979618, 73342198]
+fun bip32PrivateVersions(): array<int> = [76066276, 77428856, 78791436, 70615956, 71978536, 73341116]
+fun bip32VersionIsTestnet(version: int): bool = version == 70617039 || version == 71979618 || version == 73342198
+
+fun bip32Parse(text: string): ExtendedKeyParsed {
+    val decoded = base58CheckDecode(text)
+    if (!decoded.ok || decoded.value.size != 78) return ExtendedKeyParsed(false, "not_extended_key", null)
+    val raw = decoded.value
+    val version = bip32ReadUint32(raw, 0)
+    for (v in bip32PrivateVersions()) if (v == version) return ExtendedKeyParsed(false, "private_key", null)
+    var known = false
+    for (v in bip32PublicVersions()) if (v == version) known = true
+    if (!known) return ExtendedKeyParsed(false, "unknown_version", null)
+    val key = raw.slice(45, 78)
+    if (secpDecompress(key).infinity) return ExtendedKeyParsed(false, "bad_point", null)
+    ExtendedKeyParsed(true, "", ExtendedPublicKey(version, raw[4], raw.slice(5, 9), bip32ReadUint32(raw, 9), raw.slice(13, 45), key))
+}
+fun bip32Serialize(k: ExtendedPublicKey): string = base58CheckEncode("${bip32Uint32(k.version)}${cryptoByteString([k.depth])}${k.fingerprint}${bip32Uint32(k.childNumber)}${k.chainCode}${k.key}")
+
+// CKDpub. Not ok for a hardened index, or the one in 2^127 where the result isn't valid.
+fun bip32Child(parent: ExtendedPublicKey, index: int): ExtendedChild {
+    if (index < 0 || index >= 2147483648) return ExtendedChild(false, null)
+    val digest = hmacSha512(parent.chainCode, "${parent.key}${bip32Uint32(index)}")
+    val left = u256FromBytes(digest.slice(0, 32)).value
+    if (!u256Less(left, secpOrder())) return ExtendedChild(false, null)
+    val point = secpMultiplyAdd(left, secpGenerator(), secpDecompress(parent.key))
+    if (point.infinity) return ExtendedChild(false, null)
+    ExtendedChild(true, ExtendedPublicKey(parent.version, parent.depth + 1, hash160(parent.key).slice(0, 4), index, digest.slice(32, 64), secpCompress(point)))
+}
+// Down a path of normal steps: [0, 7] for /0/7.
+fun bip32Path(root: ExtendedPublicKey, path: array<int>): ExtendedChild {
+    var at = root
+    for (step in path) {
+        val next = bip32Child(at, step)
+        val key = next.key
+        if (key == null) return ExtendedChild(false, null)
+        at = key
+    }
+    ExtendedChild(true, at)
+}

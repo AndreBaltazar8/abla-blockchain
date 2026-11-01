@@ -1,0 +1,47 @@
+import "abla/crypto"
+import "../hash/keccak.ab"
+import "../curve/secp256k1.ab"
+
+// EIP-55: a 20-byte address with its checksum in the case of its letters.
+fun eip55FromBytes(address: string): string {
+    val lower = hexEncode(address)
+    val hash = hexEncode(keccak256(lower))
+    val out: array<int> = []
+    for (i in 0 until lower.size) {
+        val c = lower[i]
+        val nibble = hash[i]
+        val high = nibble >= 97 || nibble >= 56
+        out.append(if (c >= 97 && high) c - 32 else c)
+    }
+    "0x${cryptoByteString(out)}"
+}
+fun evmIsHex(text: string): bool {
+    for (i in 0 until text.size) {
+        val c = text[i]
+        if (!((c >= 48 && c <= 57) || (c >= 97 && c <= 102) || (c >= 65 && c <= 70))) return false
+    }
+    true
+}
+fun evmLower(text: string): string {
+    val out: array<int> = []
+    for (i in 0 until text.size) {
+        val c = text[i]
+        out.append(if (c >= 65 && c <= 90) c + 32 else c)
+    }
+    cryptoByteString(out)
+}
+// Normalizes to EIP-55. All one case is taken as carrying no checksum; mixed case has to be right. "" when it isn't an address.
+fun evmAddressNormal(text: string): string {
+    if (text.size != 42 || text[0] != 48 || text[1] != 120) return ""
+    val hex = text.slice(2, 42)
+    if (!evmIsHex(hex)) return ""
+    val lower = evmLower(hex)
+    var upper = true
+    for (i in 0 until 40) if (hex[i] >= 97) upper = false
+    val out = eip55FromBytes(hexDecode(lower))
+    if (hex != lower && !upper && out != text) return ""
+    out
+}
+
+// The address of a compressed secp256k1 public key.
+fun evmAddressOfKey(key: string): string = eip55FromBytes(keccak256(secpUncompressedXY(secpDecompress(key))).slice(12, 32))

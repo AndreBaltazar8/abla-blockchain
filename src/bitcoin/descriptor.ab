@@ -1,0 +1,90 @@
+import "abla/crypto"
+import "abla/text"
+
+// Output descriptors with a single key: wpkh, pkh and sh(wpkh), with a BIP-380 checksum.
+
+// BIP-380's descriptor checksum. "" when a character isn't in its set.
+private fun descriptorChecksumStep(c: int, value: int): int {
+    val generators = [1056006543753, 730107360018, 118834127661, 236335490938, 430795026429]
+    val top = c >> 35
+    var out = ((c & 34359738367) << 5) ^ value
+    for (i in 0 until 5) if (((top >> i) & 1) == 1) out = out ^ generators[i]
+    out
+}
+fun descriptorChecksum(text: string): string {
+    val charset = "0123456789()[],'/*abcdefgh@:\$%{}IJKLMNOPQRSTUVWXYZ&+-.;<=>?!^_|~ijklmnopqrstuvwxyzABCDEFGH`#\"\\ "
+    val check = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+    var c = 1
+    var group = 0
+    var count = 0
+    for (i in 0 until text.size) {
+        var position = -1
+        for (at in 0 until charset.size) if (charset[at] == text[i]) position = at
+        if (position < 0) return ""
+        c = descriptorChecksumStep(c, position & 31)
+        group = group * 3 + (position >> 5)
+        count = count + 1
+        if (count == 3) {
+            c = descriptorChecksumStep(c, group)
+            group = 0
+            count = 0
+        }
+    }
+    if (count > 0) c = descriptorChecksumStep(c, group)
+    for (i in 0 until 8) c = descriptorChecksumStep(c, 0)
+    c = c ^ 1
+    val out: array<int> = []
+    for (i in 0 until 8) out.append(check[(c >> (5 * (7 - i))) & 31])
+    cryptoByteString(out)
+}
+class ParsedDescriptor(val ok: bool, val code: string, val message: string, val scriptType: string, val key: string, val path: array<int>)
+private fun descriptorBad(code: string, message: string): ParsedDescriptor = ParsedDescriptor(false, code, message, "", "", [])
+// wpkh(KEY/0/*), pkh(KEY/0/*) or sh(wpkh(KEY/0/*)), where KEY can have an origin, [fingerprint/84h/1h/0h]tpub...
+fun descriptorParse(text: string): ParsedDescriptor {
+    var body = text
+    var hash = -1
+    for (i in 0 until text.size) if (text[i] == 35) hash = i
+    if (hash >= 0) {
+        body = text.slice(0, hash)
+        if (descriptorChecksum(body) != text.slice(hash + 1, text.size)) return descriptorBad("descriptor_checksum", "The descriptor's checksum is wrong. Copy it again from your wallet.")
+    }
+    var script = ""
+    var inner = ""
+    if (body.startsWith("wpkh(") && body.endsWith(")")) {
+        script = "wpkh"
+        inner = body.slice(5, body.size - 1)
+    } else if (body.startsWith("pkh(") && body.endsWith(")")) {
+        script = "pkh"
+        inner = body.slice(4, body.size - 1)
+    } else if (body.startsWith("sh(wpkh(") && body.endsWith("))")) {
+        script = "sh-wpkh"
+        inner = body.slice(8, body.size - 2)
+    } else {
+        return descriptorBad("descriptor_unsupported", "Only wpkh(...), pkh(...) and sh(wpkh(...)) descriptors are supported.")
+    }
+    if (inner.size > 0 && inner[0] == 91) {
+        var close = -1
+        for (i in 0 until inner.size) if (inner[i] == 93 && close < 0) close = i
+        if (close < 0) return descriptorBad("descriptor_invalid", "The descriptor's key origin isn't closed.")
+        inner = inner.slice(close + 1, inner.size)
+    }
+    val parts = inner.split("/")
+    if (parts.size < 2 || parts[parts.size - 1] != "*") return descriptorBad("descriptor_invalid", "The descriptor has to end in /* so that each payment gets its own address.")
+    val path: array<int> = []
+    for (at in 1 until parts.size - 1) {
+        val step = parts[at]
+        var value = 0
+        var digits = step.size > 0
+        if (step == "<0;1>") {
+            digits = true
+        } else {
+            for (i in 0 until step.size) {
+                if (step[i] < 48 || step[i] > 57) digits = false
+                else value = value * 10 + step[i] - 48
+            }
+        }
+        if (!digits || value >= 2147483648) return descriptorBad("hardened_path", "A public key can't derive hardened steps. Give the key at the last hardened level, then only plain steps.")
+        path.append(value)
+    }
+    ParsedDescriptor(true, "", "", script, parts[0], path)
+}

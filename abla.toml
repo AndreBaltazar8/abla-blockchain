@@ -1,0 +1,3 @@
+name = "abla-blockchain"
+version = "0.1.0"
+entry = "src/blockchain.ab"

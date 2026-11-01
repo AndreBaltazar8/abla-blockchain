@@ -1,0 +1,84 @@
+import "abla/json"
+import "../net/endpoint.ab"
+import "../uint256/u256.ab"
+import "address.ab"
+
+// Ethereum's JSON-RPC, for any EVM chain: the calls that read blocks, logs and receipts. Addresses come as the node writes them, lower case.
+
+class EvmTransaction(val hash: string, val from: string, val to: string, val value: U256, val input: string)
+class EvmBlock(val number: int, val hash: string, val parentHash: string, val timestamp: int, val transactions: array<EvmTransaction>)
+class EvmLog(val address: string, val topics: array<string>, val data: string, val blockNumber: int, val blockHash: string, val transactionHash: string, val logIndex: int, val removed: bool)
+class EvmReceipt(val succeeded: bool, val gasUsed: U256, val effectiveGasPrice: U256) {
+    // What the sender paid, in wei.
+    fun fee(): U256Checked = u256Mul(this.gasUsed, this.effectiveGasPrice)
+}
+class EvmNumberReply(val ok: bool, val message: string, val value: int)
+// ok with no block: the node doesn't have that one.
+class EvmBlockReply(val ok: bool, val message: string, val block: EvmBlock?)
+class EvmLogsReply(val ok: bool, val message: string, val logs: array<EvmLog>)
+class EvmReceiptReply(val ok: bool, val message: string, val receipt: EvmReceipt?)
+class EvmCallReply(val ok: bool, val message: string, val result: Json)
+
+fun evmQuantity(value: int): string = u256FromInt(value).toHex()
+fun evmQuantityInt(text: string): int {
+    val parsed = u256FromHex(text)
+    if (!parsed.ok) return 0
+    parsed.value.w[0] | (parsed.value.w[1] << 32)
+}
+private fun evmAmount(text: string): U256 {
+    val parsed = u256FromHex(text)
+    if (parsed.ok) parsed.value else u256Zero()
+}
+fun evmBlockFrom(j: Json): EvmBlock {
+    val transactions: array<EvmTransaction> = []
+    for (tx in j.get("transactions").values) transactions.append(EvmTransaction(tx.getString("hash"), tx.getString("from"), tx.getString("to"), evmAmount(tx.getString("value")), tx.getString("input")))
+    EvmBlock(evmQuantityInt(j.getString("number")), j.getString("hash"), j.getString("parentHash"), evmQuantityInt(j.getString("timestamp")), transactions)
+}
+fun evmLogFrom(j: Json): EvmLog {
+    val topics: array<string> = []
+    for (t in j.get("topics").values) topics.append(t.asString())
+    EvmLog(j.getString("address"), topics, j.getString("data"), evmQuantityInt(j.getString("blockNumber")), j.getString("blockHash"), j.getString("transactionHash"), evmQuantityInt(j.getString("logIndex")), j.get("removed").asBoolean())
+}
+fun evmReceiptFrom(j: Json): EvmReceipt = EvmReceipt(j.getString("status") == "0x1", evmAmount(j.getString("gasUsed")), evmAmount(j.getString("effectiveGasPrice")))
+// An address as an indexed topic: 32 bytes.
+fun evmAddressTopic(address: string): string {
+    val lower = evmLower(address)
+    "0x000000000000000000000000${lower.slice(2, lower.size)}"
+}
+fun evmTopicAddress(topic: string): string = if (topic.size == 66) "0x${topic.slice(26, 66)}" else ""
+
+class EvmRpcClient(val endpoint: ChainEndpoint) {
+    fun call(method: string, params: string): EvmCallReply {
+        val reply = this.endpoint.send("POST", "", "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":${jsonQuote(method)},\"params\":$params}", "application/json")
+        if (!reply.ok) return EvmCallReply(false, "$method: ${reply.message}", jsonNull())
+        if (reply.value.has("error")) return EvmCallReply(false, "$method: ${reply.value.get("error").getString("message")}", jsonNull())
+        EvmCallReply(true, "", reply.value.get("result"))
+    }
+    fun blockNumber(): EvmNumberReply {
+        val reply = this.call("eth_blockNumber", "[]")
+        if (!reply.ok) return EvmNumberReply(false, reply.message, 0)
+        EvmNumberReply(true, "", evmQuantityInt(reply.result.asString()))
+    }
+    fun blockByNumber(number: int): EvmBlockReply {
+        val reply = this.call("eth_getBlockByNumber", "[${jsonQuote(evmQuantity(number))},true]")
+        if (!reply.ok) return EvmBlockReply(false, reply.message, null)
+        if (reply.result.isNull()) return EvmBlockReply(true, "", null)
+        EvmBlockReply(true, "", evmBlockFrom(reply.result))
+    }
+    // One block's logs, by its hash, which can't be answered from another fork. Public endpoints that refuse a filter with no contract over a range do allow this.
+    // `topics` is the filter as JSON, such as ["0xddf2...",null,["0x000..."]].
+    fun logsInBlock(blockHash: string, topics: string): EvmLogsReply {
+        val reply = this.call("eth_getLogs", "[{\"blockHash\":${jsonQuote(blockHash)},\"topics\":$topics}]")
+        if (!reply.ok) return EvmLogsReply(false, reply.message, [])
+        val out: array<EvmLog> = []
+        for (j in reply.result.values) out.append(evmLogFrom(j))
+        EvmLogsReply(true, "", out)
+    }
+    fun receipt(transactionHash: string): EvmReceiptReply {
+        val reply = this.call("eth_getTransactionReceipt", "[${jsonQuote(transactionHash)}]")
+        if (!reply.ok) return EvmReceiptReply(false, reply.message, null)
+        if (reply.result.isNull()) return EvmReceiptReply(true, "", null)
+        EvmReceiptReply(true, "", evmReceiptFrom(reply.result))
+    }
+}
+fun evmRpcClient(endpoint: ChainEndpoint): EvmRpcClient = EvmRpcClient(endpoint)

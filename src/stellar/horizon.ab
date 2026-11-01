@@ -1,0 +1,79 @@
+import "abla/json"
+import "abla/text"
+import "../net/endpoint.ab"
+import "../uint256/u256.ab"
+
+// Reading Stellar through Horizon: payments to an account, with their transaction's memo, and how its amounts and times are written.
+
+// 2026-11-01T18:30:05Z in Unix seconds. 0 for anything else.
+fun stellarTime(text: string): int {
+    if (text.size < 19) return 0
+    val y = stellarDigits(text, 0, 4)
+    val m = stellarDigits(text, 5, 7)
+    val d = stellarDigits(text, 8, 10)
+    val adjusted = if (m <= 2) y - 1 else y
+    val era = adjusted / 400
+    val yoe = adjusted - era * 400
+    val shifted = if (m > 2) m - 3 else m + 9
+    val doy = (153 * shifted + 2) / 5 + d - 1
+    val doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
+    (era * 146097 + doe - 719468) * 86400 + stellarDigits(text, 11, 13) * 3600 + stellarDigits(text, 14, 16) * 60 + stellarDigits(text, 17, 19)
+}
+private fun stellarDigits(text: string, start: int, end: int): int {
+    var out = 0
+    for (i in start until end) out = out * 10 + text[i] - 48
+    out
+}
+// "10.5000000" in stroops. Horizon always writes seven decimals.
+fun stellarAmount(text: string): U256Checked {
+    val parts = text.split(".")
+    if (parts.size != 2 || parts[1].size != 7) return U256Checked(false, u256Zero())
+    u256FromDecimal("${parts[0]}${parts[1]}")
+}
+// A paging token from where a ledger starts, for reading from there.
+fun stellarLedgerCursor(ledger: int): string = "${ledger * 4294967296}"
+// `kind`: payment, path_payment_strict_receive, path_payment_strict_send, create_account, account_merge. `asset` is native or CODE:ISSUER.
+// `hasAmount` is false for an account merge: Horizon doesn't say how much in this list.
+class HorizonPayment(
+    val id: string, val pagingToken: string, val kind: string, val to: string, val from: string,
+    val hasAmount: bool, val amount: U256, val asset: string,
+    val transactionHash: string, val memo: string, val memoType: string, val ledger: int, val feeCharged: string, val time: int
+)
+fun horizonPaymentFrom(r: Json): HorizonPayment {
+    val kind = r.getString("type")
+    val creating = kind == "create_account"
+    val merging = kind == "account_merge"
+    val amount = stellarAmount(if (creating) r.getString("starting_balance") else r.getString("amount"))
+    val asset = if (creating || r.getString("asset_type") == "native") "native" else "${r.getString("asset_code")}:${r.getString("asset_issuer")}"
+    val tx = r.get("transaction")
+    HorizonPayment(r.getString("id"), r.getString("paging_token"), kind, if (creating) r.getString("account") else if (merging) r.getString("into") else r.getString("to"), if (creating) r.getString("funder") else if (merging) r.getString("account") else r.getString("from"), amount.ok, amount.value, asset, r.getString("transaction_hash"), tx.getString("memo"), tx.getString("memo_type"), tx.getInt("ledger"), tx.getString("fee_charged"), stellarTime(r.getString("created_at")))
+}
+class HorizonLedger(val ok: bool, val message: string, val latest: int)
+// `missing`: Horizon doesn't know the account, which has simply received nothing yet.
+class HorizonPayments(val ok: bool, val missing: bool, val message: string, val records: array<HorizonPayment>)
+class HorizonClient(val endpoint: ChainEndpoint) {
+    fun latestLedger(): HorizonLedger {
+        val reply = this.endpoint.send("GET", "/")
+        if (!reply.ok) return HorizonLedger(false, reply.message, 0)
+        val latest = reply.value.getInt("history_latest_ledger")
+        if (latest <= 0) return HorizonLedger(false, "Horizon gave no latest ledger", 0)
+        HorizonLedger(true, "", latest)
+    }
+    // After `cursor`, oldest first, up to `limit` (200 at most), with their transactions. Failed transactions aren't listed.
+    fun accountPayments(account: string, cursor: string, limit: int = 200): HorizonPayments {
+        val reply = this.endpoint.send("GET", "/accounts/$account/payments?cursor=$cursor&limit=$limit&order=asc&join=transactions")
+        if (reply.status == 404) return HorizonPayments(true, true, "", [])
+        if (!reply.ok) return HorizonPayments(false, false, reply.message, [])
+        val out: array<HorizonPayment> = []
+        for (r in reply.value.get("_embedded").get("records").values) out.append(horizonPaymentFrom(r))
+        HorizonPayments(true, false, "", out)
+    }
+}
+fun horizonClient(endpoint: ChainEndpoint): HorizonClient = HorizonClient(endpoint)
+// SEP-7. `amount` is in whole units, as text; asset is native or CODE:ISSUER.
+fun sep7PayUri(destination: string, amount: string, asset: string, memo: string): string {
+    val base = if (memo == "") "web+stellar:pay?destination=$destination&amount=$amount" else "web+stellar:pay?destination=$destination&amount=$amount&memo=$memo&memo_type=MEMO_TEXT"
+    val parts = asset.split(":")
+    if (parts.size != 2) return base
+    "$base&asset_code=${parts[0]}&asset_issuer=${parts[1]}"
+}

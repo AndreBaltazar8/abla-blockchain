@@ -1,0 +1,63 @@
+import "abla/test"
+import "abla/http"
+import "abla/json"
+import "abla/sys/linux"
+import "../src/blockchain.ab"
+
+// JSON-RPC and ERC-20, replaying a real Sepolia block with a real USDC transfer and a real ether payment.
+fun main: int {
+    val real = jsonParse(linuxReadFile("tests/fixtures/evm/real.json", 8388608), jsonPermissiveLimits).value
+    val block = real.get("token_block")
+    val log = real.get("token_log")
+    val client = evmRpcClient(ChainEndpoint({ request: HttpRequest ->
+        val call = jsonParse(request.body).value
+        val method = call.getString("method")
+        var result = jsonNull()
+        if (method == "eth_blockNumber") result = jsonString("0xb7c165")
+        if (method == "eth_getBlockByNumber" && call.get("params").at(0).asString() == block.getString("number")) result = block
+        if (method == "eth_getLogs") result = jsonArray([log])
+        if (method == "eth_getTransactionReceipt") result = real.get("token_receipt")
+        if (method == "eth_fail") return HttpClientResult(HttpResponse(200, [], "{\"error\":{\"message\":\"nope\"}}"), true, true)
+        HttpClientResult(HttpResponse(200, [], jsonStringify(jsonObject(["result"], [result]))), true, true)
+    }, ""))
+    expectEqual(client.blockNumber().value, 12042597, "block number")
+    val number = evmQuantityInt(block.getString("number"))
+    val got = client.blockByNumber(number)
+    val b = got.block
+    expect(b != null, "a block")
+    if (b != null) {
+        expectEqual(b.hash, block.getString("hash"), "hash")
+        expectEqual(b.parentHash, block.getString("parentHash"), "parent")
+        expectEqual(b.number, number, "number")
+        expect(b.timestamp > 1700000000, "time")
+    }
+    val none = client.blockByNumber(5)
+    expect(none.ok && none.block == null, "a block the node lacks")
+    expect(!client.call("eth_fail", "[]").ok, "an RPC error says so")
+    expectEqual(erc20TransfersToFilter(["0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed"]), "[\"0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef\",null,[\"0x0000000000000000000000005aaeb6053f3e94c9b9a09f33669435e7ef1beaed\"]]", "the filter")
+    val logs = client.logsInBlock(block.getString("hash"), "[]")
+    val parsed = logs.logs[0]
+    val transfer = erc20DecodeTransfer(parsed)
+    expect(transfer != null, "a real ERC-20 transfer")
+    if (transfer != null) {
+        expectEqual(transfer.token, real.getString("token"), "token")
+        expectEqual(evmAddressTopic(transfer.to), log.get("topics").at(2).asString(), "to")
+        expectEqual(transfer.amount.toHex(), u256FromHex(log.getString("data")).value.toHex(), "amount")
+    }
+    // An ERC-721's has four topics; a removed log, or a short one, isn't a transfer.
+    val topics = parsed.topics
+    expect(erc20DecodeTransfer(EvmLog(parsed.address, [topics[0], topics[1], topics[2], topics[1]], "0x", 1, "", "", 0, false)) == null, "NFT")
+    expect(erc20DecodeTransfer(EvmLog(parsed.address, topics, parsed.data, 1, "", "", 0, true)) == null, "removed")
+    expect(erc20DecodeTransfer(EvmLog(parsed.address, topics, "0x01", 1, "", "", 0, false)) == null, "short data")
+    val receipt = client.receipt("0xany").receipt
+    expect(receipt != null, "receipt")
+    if (receipt != null) {
+        expect(receipt.succeeded, "succeeded")
+        val used = u256FromHex(real.get("token_receipt").getString("gasUsed")).value
+        val price = u256FromHex(real.get("token_receipt").getString("effectiveGasPrice")).value
+        expectEqual(receipt.fee().value.toDecimal(), u256Mul(used, price).value.toDecimal(), "fee")
+    }
+    expectEqual(eip681Native(11155111, "0xabc", u256FromInt(5)), "ethereum:0xabc@11155111?value=5", "EIP-681")
+    expectEqual(eip681Erc20(1, "0xt", "0xa", u256FromInt(7)), "ethereum:0xt@1/transfer?address=0xa&uint256=7", "EIP-681 token")
+    testsPassed()
+}

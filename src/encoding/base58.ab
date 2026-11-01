@@ -1,0 +1,75 @@
+import "abla/crypto"
+
+// Base58 and Base58Check, as Bitcoin writes addresses and extended keys.
+
+private fun base58Alphabet(): string = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+fun base58Encode(value: string): string {
+    val digits: array<int> = []
+    for (i in 0 until value.size) {
+        var carry = value[i]
+        for (j in 0 until digits.size) {
+            carry = carry + digits[j] * 256
+            digits[j] = carry % 58
+            carry = carry / 58
+        }
+        while (carry > 0) {
+            digits.append(carry % 58)
+            carry = carry / 58
+        }
+    }
+    val alphabet = base58Alphabet()
+    val out: array<int> = []
+    var zeros = 0
+    while (zeros < value.size && value[zeros] == 0) {
+        out.append(49)
+        zeros = zeros + 1
+    }
+    var i = digits.size - 1
+    while (i >= 0) {
+        out.append(alphabet[digits[i]])
+        i = i - 1
+    }
+    cryptoByteString(out)
+}
+class Base58Decoded(val ok: bool, val value: string)
+fun base58Decode(text: string): Base58Decoded {
+    val alphabet = base58Alphabet()
+    val bytes: array<int> = []
+    for (i in 0 until text.size) {
+        var digit = -1
+        for (d in 0 until 58) if (alphabet[d] == text[i]) digit = d
+        if (digit < 0) return Base58Decoded(false, "")
+        var carry = digit
+        for (j in 0 until bytes.size) {
+            carry = carry + bytes[j] * 58
+            bytes[j] = carry & 255
+            carry = carry >> 8
+        }
+        while (carry > 0) {
+            bytes.append(carry & 255)
+            carry = carry >> 8
+        }
+    }
+    val out: array<int> = []
+    var zeros = 0
+    while (zeros < text.size && text[zeros] == 49) {
+        out.append(0)
+        zeros = zeros + 1
+    }
+    var i = bytes.size - 1
+    while (i >= 0) {
+        out.append(bytes[i])
+        i = i - 1
+    }
+    Base58Decoded(true, cryptoByteString(out))
+}
+private fun doubleSha256(value: string): string = sha256(sha256(value))
+fun base58CheckEncode(value: string): string = base58Encode("$value${doubleSha256(value).slice(0, 4)}")
+fun base58CheckDecode(text: string): Base58Decoded {
+    val decoded = base58Decode(text)
+    if (!decoded.ok || decoded.value.size < 4) return Base58Decoded(false, "")
+    val body = decoded.value.slice(0, decoded.value.size - 4)
+    if (doubleSha256(body).slice(0, 4) != decoded.value.slice(decoded.value.size - 4, decoded.value.size)) return Base58Decoded(false, "")
+    Base58Decoded(true, body)
+}
+
