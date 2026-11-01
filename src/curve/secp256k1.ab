@@ -4,10 +4,15 @@ import "../uint256/u256.ab"
 // secp256k1 for public keys: nothing here takes a secret. Timing doesn't matter, since every input is
 // public, so it's plain double-and-add with no attempt at constant time. Field elements are U256 below p.
 
-private fun secpPrime(): U256 = u256FromHex("fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f").value
-fun secpOrder(): U256 = u256FromHex("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141").value
-private fun secpGx(): U256 = u256FromHex("79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798").value
-private fun secpGy(): U256 = u256FromHex("483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8").value
+// Parsed once: these are read for every field operation.
+private val secpPrimeValue = u256FromHex("fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f").value
+private fun secpPrime(): U256 = secpPrimeValue
+private val secpOrderValue = u256FromHex("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141").value
+fun secpOrder(): U256 = secpOrderValue
+private val secpGxValue = u256FromHex("79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798").value
+private fun secpGx(): U256 = secpGxValue
+private val secpGyValue = u256FromHex("483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8").value
+private fun secpGy(): U256 = secpGyValue
 
 // 2^256 mod p is 977 + 2^32, so what's above 256 bits folds in with that factor.
 private fun fieldFold(limbs: array<int>): U256 {
@@ -135,3 +140,12 @@ fun secpDecompress(key: string): SecpPoint {
 fun secpCompress(p: SecpPoint): string = "${cryptoByte(if ((p.y.w[0] & 1) == 1) 3 else 2)}${p.x.toBytes()}"
 fun secpUncompressedXY(p: SecpPoint): string = "${p.x.toBytes()}${p.y.toBytes()}"
 private fun cryptoByte(value: int): string = cryptoByteString([value])
+// 02/03 + x, or 04 + x + y. Infinity when it isn't a point on the curve.
+fun secpParsePublicKey(key: string): SecpPoint {
+    if (key.size == 33) return secpDecompress(key)
+    val none = SecpPoint(true, u256Zero(), u256Zero())
+    if (key.size != 65 || key[0] != 4) return none
+    val point = SecpPoint(false, u256FromBytes(key.slice(1, 33)).value, u256FromBytes(key.slice(33, 65)).value)
+    if (!u256Less(point.x, secpPrime()) || !u256Less(point.y, secpPrime()) || !secpOnCurve(point)) return none
+    point
+}

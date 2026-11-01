@@ -1,0 +1,108 @@
+import "abla/crypto"
+
+// Bitcoin's own bytes: transactions, legacy and segwit, and block headers. Hashes are shown as Bitcoin shows them, byte-reversed.
+
+class BitcoinRawInput(val previousTxid: string, val previousIndex: int, val scriptSig: string, val sequence: int, val witness: array<string>)
+class BitcoinRawOutput(val value: int, val scriptPubKey: string)
+class BitcoinRawTransaction(val ok: bool, val version: int, val inputs: array<BitcoinRawInput>, val outputs: array<BitcoinRawOutput>, val lockTime: int, val segwit: bool, val txid: string, val wtxid: string)
+class BitcoinBlockHeader(val ok: bool, val version: int, val previousBlock: string, val merkleRoot: string, val time: int, val bits: int, val nonce: int, val hash: string)
+
+fun bitcoinDoubleSha256(value: string): string = sha256(sha256(value))
+fun bitcoinReversedHex(value: string): string {
+    val out: array<int> = []
+    var i = value.size - 1
+    while (i >= 0) {
+        out.append(value[i])
+        i = i - 1
+    }
+    hexEncode(cryptoByteString(out))
+}
+private class RawReader(val data: string, var at: int, var bad: bool) {
+    fun take(count: int): string {
+        if (count < 0 || this.at + count > this.data.size) {
+            this.bad = true
+            return ""
+        }
+        val out = this.data.slice(this.at, this.at + count)
+        this.at = this.at + count
+        out
+    }
+    fun little(count: int): int {
+        val bytes = this.take(count)
+        if (this.bad) return 0
+        var out = 0
+        var i = count - 1
+        while (i >= 0) {
+            out = (out << 8) | bytes[i]
+            i = i - 1
+        }
+        out
+    }
+    fun compact(): int {
+        val first = this.little(1)
+        if (first < 253) return first
+        if (first == 253) return this.little(2)
+        if (first == 254) return this.little(4)
+        this.bad = true
+        0
+    }
+}
+private fun rawFailed(): BitcoinRawTransaction = BitcoinRawTransaction(false, 0, [], [], 0, false, "", "")
+fun bitcoinParseTransaction(raw: string): BitcoinRawTransaction {
+    var r = RawReader(raw, 0, false)
+    val version = r.little(4)
+    var segwit = false
+    if (r.at + 2 <= raw.size && raw[r.at] == 0 && raw[r.at + 1] == 1) {
+        segwit = true
+        r.take(2)
+    }
+    val bodyStart = r.at
+    val inputCount = r.compact()
+    if (r.bad || inputCount > raw.size) return rawFailed()
+    val inputs: array<BitcoinRawInput> = []
+    for (i in 0 until inputCount) {
+        val previous = bitcoinReversedHex(r.take(32))
+        val index = r.little(4)
+        val script = r.take(r.compact())
+        val sequence = r.little(4)
+        if (r.bad) return rawFailed()
+        inputs.append(BitcoinRawInput(previous, index, script, sequence, []))
+    }
+    val outputCount = r.compact()
+    if (r.bad || outputCount > raw.size) return rawFailed()
+    val outputs: array<BitcoinRawOutput> = []
+    for (i in 0 until outputCount) {
+        val value = r.little(8)
+        val script = r.take(r.compact())
+        if (r.bad) return rawFailed()
+        outputs.append(BitcoinRawOutput(value, script))
+    }
+    val bodyEnd = r.at
+    if (segwit) {
+        for (i in 0 until inputCount) {
+            val items = r.compact()
+            if (r.bad || items > raw.size) return rawFailed()
+            val witness: array<string> = []
+            for (j in 0 until items) witness.append(r.take(r.compact()))
+            if (r.bad) return rawFailed()
+            inputs[i] = BitcoinRawInput(inputs[i].previousTxid, inputs[i].previousIndex, inputs[i].scriptSig, inputs[i].sequence, witness)
+        }
+    }
+    val lockStart = r.at
+    val lockTime = r.little(4)
+    if (r.bad || r.at != raw.size) return rawFailed()
+    // The txid leaves out the marker, the flag and the witnesses.
+    val stripped = "${raw.slice(0, 4)}${raw.slice(bodyStart, bodyEnd)}${raw.slice(lockStart, lockStart + 4)}"
+    BitcoinRawTransaction(true, version, inputs, outputs, lockTime, segwit, bitcoinReversedHex(bitcoinDoubleSha256(stripped)), bitcoinReversedHex(bitcoinDoubleSha256(raw)))
+}
+fun bitcoinParseHeader(raw: string): BitcoinBlockHeader {
+    if (raw.size != 80) return BitcoinBlockHeader(false, 0, "", "", 0, 0, 0, "")
+    var r = RawReader(raw, 0, false)
+    val version = r.little(4)
+    val previous = bitcoinReversedHex(r.take(32))
+    val merkle = bitcoinReversedHex(r.take(32))
+    val time = r.little(4)
+    val bits = r.little(4)
+    val nonce = r.little(4)
+    BitcoinBlockHeader(true, version, previous, merkle, time, bits, nonce, bitcoinReversedHex(bitcoinDoubleSha256(raw)))
+}

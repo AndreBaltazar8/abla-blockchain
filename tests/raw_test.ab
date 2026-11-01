@@ -1,0 +1,93 @@
+import "abla/test"
+import "abla/crypto"
+import "abla/json"
+import "abla/sys/linux"
+import "../src/blockchain.ab"
+
+// Raw formats. A real format's proof is its hash: what's parsed from the bytes has to hash to what the chain calls it.
+fun enc(item: RlpItem): string = hexEncode(rlpEncode(item))
+fun main: int {
+    val real = jsonParse(linuxReadFile("tests/fixtures/raw/real.json", 4194304), jsonPermissiveLimits).value
+    val mined = jsonParse(linuxReadFile("tests/fixtures/bitcoin/real.json", 8388608), jsonPermissiveLimits).value
+    // Bitcoin's genesis header.
+    val genesis = bitcoinParseHeader(hexDecode("0100000000000000000000000000000000000000000000000000000000000000000000003ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4a29ab5f49ffff001d1dac2b7c"))
+    expectEqual(genesis.hash, "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f", "genesis hash")
+    expectEqual(genesis.merkleRoot, "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b", "genesis merkle root")
+    expectEqual(genesis.time, 1231006505, "genesis time")
+    expectEqual(genesis.nonce, 2083236893, "genesis nonce")
+    expect(!bitcoinParseHeader("short").ok, "not a header")
+    // The genesis coinbase, a legacy transaction.
+    val coinbase = bitcoinParseTransaction(hexDecode("01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff4d04ffff001d0104455468652054696d65732030332f4a616e2f32303039204368616e63656c6c6f72206f6e206272696e6b206f66207365636f6e64206261696c6f757420666f722062616e6b73ffffffff0100f2052a01000000434104678afdb0fe5548271967f1a67130b7105cd6a828e03909a67962e0ea1f61deb649f6bc3f4cef38c4f35504e51ec112de5c384df7ba0b8d578a4c702b6bf11d5fac00000000"))
+    expect(coinbase.ok && !coinbase.segwit, "legacy")
+    expectEqual(coinbase.txid, "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b", "genesis txid")
+    expectEqual(coinbase.outputs[0].value, 5000000000, "fifty coins")
+    // A real segwit transaction on signet, by its txid.
+    val raw = bitcoinParseTransaction(hexDecode(real.getString("bitcoin_tx")))
+    expect(raw.ok && raw.segwit, "segwit")
+    expectEqual(raw.txid, real.getString("bitcoin_txid"), "real txid")
+    expect(raw.txid != raw.wtxid, "wtxid differs")
+    val tx = mined.get("txs").at(0)
+    expectEqual(raw.outputs.size, tx.get("vout").size(), "outputs")
+    expectEqual(raw.outputs[0].value, tx.get("vout").at(0).get("value").asInt(), "value")
+    expectEqual(hexEncode(raw.outputs[0].scriptPubKey), tx.get("vout").at(0).getString("scriptpubkey"), "script")
+    expectEqual(raw.inputs[0].previousTxid, tx.get("vin").at(0).getString("txid"), "input")
+    expectEqual(raw.inputs[0].witness.size, tx.get("vin").at(0).get("witness").size(), "witness")
+    expect(!bitcoinParseTransaction(hexDecode(real.getString("bitcoin_tx")).slice(0, 40)).ok, "cut short")
+    val header = bitcoinParseHeader(hexDecode(real.getString("bitcoin_header")))
+    expectEqual(header.hash, real.getString("bitcoin_block_hash"), "real block hash")
+    // RLP: the examples in Ethereum's documentation.
+    expectEqual(enc(rlpBytes("dog")), "83646f67", "dog")
+    expectEqual(enc(rlpList([rlpBytes("cat"), rlpBytes("dog")])), "c88363617483646f67", "cat, dog")
+    expectEqual(enc(rlpBytes("")), "80", "empty")
+    expectEqual(enc(rlpList([])), "c0", "empty list")
+    expectEqual(enc(rlpBytes(hexDecode("0f"))), "0f", "fifteen")
+    expectEqual(enc(rlpBytes(hexDecode("0400"))), "820400", "1024")
+    expectEqual(enc(rlpList([rlpList([]), rlpList([rlpList([])]), rlpList([rlpList([]), rlpList([rlpList([])])])])), "c7c0c1c0c3c0c1c0", "set theory")
+    val lorem = "Lorem ipsum dolor sit amet, consectetur adipisicing elit"
+    expectEqual(enc(rlpBytes(lorem)), "b838${hexEncode(lorem)}", "long string")
+    val round = rlpDecode(hexDecode("c88363617483646f67"))
+    expect(round.ok && round.item.list && round.item.items[1].bytes == "dog", "decoded")
+    expect(!rlpDecode(hexDecode("8101")).ok, "a low byte wrapped is refused")
+    expect(!rlpDecode(hexDecode("b80100")).ok, "a long form for a short one is refused")
+    expect(!rlpDecode(hexDecode("83646f")).ok, "cut short")
+    expect(!rlpDecode(hexDecode("83646f6700")).ok, "something left over")
+    // EIP-155's own example: its signed transaction, and its hash.
+    val eip155 = evmParseTransaction(hexDecode("f86c098504a817c800825208943535353535353535353535353535353535353535880de0b6b3a76400008025a028ef61340bd939bc2195fe537567866003e1a15d3c71ff63e1590620aa636276a067cbe9d8997f761aecb703304b3800ccf555c9f3dc64214b297fb1966a3b6d83"))
+    expect(eip155.ok, "EIP-155")
+    expectEqual(eip155.chainId, 1, "chain")
+    expectEqual(eip155.nonce, 9, "nonce")
+    expectEqual(eip155.to, "0x3535353535353535353535353535353535353535", "to")
+    expectEqual(eip155.value.toDecimal(), "1000000000000000000", "value")
+    // Real Sepolia ones, EIP-1559, by their hashes.
+    for (name in ["evm_native", "evm_token"]) {
+        val parsed = evmParseTransaction(hexDecode(real.get(name).getString("raw").slice(2, real.get(name).getString("raw").size)))
+        expect(parsed.ok, name)
+        expectEqual(parsed.hash, real.get(name).getString("hash"), "$name hash")
+        expectEqual(parsed.kind, 2, "$name type")
+        expectEqual(parsed.chainId, 11155111, "$name chain")
+    }
+    expect(!evmParseTransaction(hexDecode("03c0")).ok, "a type this doesn't read")
+    // Real Stellar testnet envelopes: their hashes, what they carry, and each signature checked.
+    val stellar = jsonParse(linuxReadFile("tests/fixtures/stellar/real.json", 8388608), jsonPermissiveLimits).value
+    var read = 0
+    for (record in stellar.get("records").values) {
+        val t = record.get("transaction")
+        val parsed = stellarParseEnvelope(base64Decode(t.getString("envelope_xdr")), stellarTestnetPassphrase())
+        if (parsed.reason != "unsupported") {
+            read = read + 1
+            expect(parsed.ok, "envelope")
+            expectEqual(parsed.hash, t.getString("hash"), "real hash")
+            expectEqual(parsed.source, t.getString("source_account"), "source")
+            if (t.getString("memo_type") == "text") expectEqual(parsed.memo, t.getString("memo"), "memo")
+            expectEqual("${parsed.fee}", t.getString("max_fee"), "fee")
+            expect(ed25519Verify(strkeyDecode(parsed.source).payload, hexDecode(parsed.hash), parsed.signatures[0]), "its signature, by Ed25519")
+            if (record.getString("type") == "payment" && parsed.operations.size == 1) {
+                expectEqual(parsed.operations[0].destination, record.getString("to"), "destination")
+                expectEqual("${parsed.operations[0].amount}", stellarAmount(record.getString("amount")).value.toDecimal(), "amount")
+            }
+        }
+    }
+    expect(read >= 10, "real envelopes read: $read")
+    expect(!stellarParseEnvelope("nope", stellarTestnetPassphrase()).ok, "not an envelope")
+    testsPassed()
+}

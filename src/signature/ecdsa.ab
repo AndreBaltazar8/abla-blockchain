@@ -1,0 +1,49 @@
+import "abla/crypto"
+import "../uint256/u256.ab"
+import "../curve/modular.ab"
+import "../curve/secp256k1.ab"
+
+// Checking ECDSA signatures on secp256k1. Only checking: nothing here signs.
+
+class EcdsaSignature(val ok: bool, val r: U256, val s: U256)
+private fun ecdsaBad(): EcdsaSignature = EcdsaSignature(false, u256Zero(), u256Zero())
+// One strict DER INTEGER at `at`: its value's start and end, or -1. It has to be positive, and minimal.
+private fun derInteger(der: string, at: int): array<int> {
+    if (at + 2 > der.size || der[at] != 2) return [-1, -1]
+    val length = der[at + 1]
+    val start = at + 2
+    if (length == 0 || length > 33 || start + length > der.size) return [-1, -1]
+    if ((der[start] & 128) != 0) return [-1, -1]
+    // Thirty-three bytes only to keep a top bit from reading as a sign.
+    if (length == 33 && der[start] != 0) return [-1, -1]
+    if (length > 1 && der[start] == 0 && (der[start + 1] & 128) == 0) return [-1, -1]
+    [start, start + length]
+}
+// Strict DER, as BIP-66 asks: no other length forms, no padding, nothing left over.
+fun ecdsaParseDer(der: string): EcdsaSignature {
+    if (der.size < 8 || der[0] != 48 || der[1] != der.size - 2 || der[1] > 127) return ecdsaBad()
+    val r = derInteger(der, 2)
+    if (r[0] < 0) return ecdsaBad()
+    val s = derInteger(der, r[1])
+    if (s[0] < 0 || s[1] != der.size) return ecdsaBad()
+    val rValue = u256FromBytes(der.slice(r[0] + (if (r[1] - r[0] == 33) 1 else 0), r[1]))
+    val sValue = u256FromBytes(der.slice(s[0] + (if (s[1] - s[0] == 33) 1 else 0), s[1]))
+    if (!rValue.ok || !sValue.ok) return ecdsaBad()
+    EcdsaSignature(true, rValue.value, sValue.value)
+}
+// `digest` is the message's hash, up to 32 bytes. `key` is a compressed or uncompressed public key.
+fun ecdsaVerify(digest: string, signature: EcdsaSignature, key: string): bool {
+    if (!signature.ok || digest.size > 32) return false
+    val n = secpOrder()
+    if (signature.r.isZero() || signature.s.isZero() || !u256Less(signature.r, n) || !u256Less(signature.s, n)) return false
+    val q = secpParsePublicKey(key)
+    if (q.infinity) return false
+    val z = modReduce(u256FromBytes(digest).value, n)
+    val w = modInverse(signature.s, n)
+    val first = secpMultiplyAdd(modMul(z, w, n), secpGenerator(), SecpPoint(true, u256Zero(), u256Zero()))
+    val second = secpMultiplyAdd(modMul(signature.r, w, n), q, SecpPoint(true, u256Zero(), u256Zero()))
+    val sum = if (first.infinity) second else if (second.infinity) first else secpMultiplyAdd(u256FromInt(1), first, second)
+    if (sum.infinity) return false
+    u256Equal(modReduce(sum.x, n), signature.r)
+}
+fun ecdsaVerifySha256(message: string, der: string, key: string): bool = ecdsaVerify(sha256(message), ecdsaParseDer(der), key)

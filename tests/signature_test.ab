@@ -1,0 +1,52 @@
+import "abla/test"
+import "abla/crypto"
+import "abla/json"
+import "abla/sys/linux"
+import "../src/blockchain.ab"
+
+// Project Wycheproof's whole suites for ECDSA on secp256k1 and Ed25519, and RFC 8032's vectors.
+fun file(name: string): Json = jsonParse(linuxReadFile("tests/wycheproof/$name", 4194304), jsonPermissiveLimits).value
+fun main: int {
+    val edKey = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+    val edSig = "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"
+    expect(ed25519Verify(hexDecode(edKey), "", hexDecode(edSig)), "RFC 8032 test 1")
+    expect(!ed25519Verify(hexDecode(edKey), "x", hexDecode(edSig)), "another message")
+    expect(ed25519Verify(hexDecode("3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c"), hexDecode("72"), hexDecode("92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00")), "RFC 8032 test 2")
+    val modulus = secpOrder()
+    expectEqual(modMul(modInverse(u256FromInt(12345), modulus), u256FromInt(12345), modulus).toDecimal(), "1", "an inverse")
+    expect(modInverse(u256Zero(), modulus).isZero(), "of nothing")
+    var ecdsaCases = 0
+    var ecdsaWrong = 0
+    for (group in file("ecdsa_secp256k1_sha256_test.json").get("testGroups").values) {
+        val key = hexDecode(group.get("publicKey").getString("uncompressed"))
+        for (t in group.get("tests").values) {
+            val got = ecdsaVerifySha256(hexDecode(t.getString("msg")), hexDecode(t.getString("sig")), key)
+            val want = t.getString("result")
+            ecdsaCases = ecdsaCases + 1
+            // "acceptable" may go either way.
+            if ((want == "valid" && !got) || (want == "invalid" && got)) {
+                ecdsaWrong = ecdsaWrong + 1
+                println("ecdsa ${t.getInt("tcId")} ${t.getString("comment")}: $want, got $got")
+            }
+        }
+    }
+    expectEqual(ecdsaWrong, 0, "Wycheproof ECDSA secp256k1")
+    expect(ecdsaCases > 400, "the whole suite: $ecdsaCases")
+    var edCases = 0
+    var edWrong = 0
+    for (group in file("ed25519_test.json").get("testGroups").values) {
+        val key = hexDecode(group.get("publicKey").getString("pk"))
+        for (t in group.get("tests").values) {
+            val got = ed25519Verify(key, hexDecode(t.getString("msg")), hexDecode(t.getString("sig")))
+            val want = t.getString("result")
+            edCases = edCases + 1
+            if ((want == "valid" && !got) || (want == "invalid" && got)) {
+                edWrong = edWrong + 1
+                println("ed25519 ${t.getInt("tcId")} ${t.getString("comment")}: $want, got $got")
+            }
+        }
+    }
+    expectEqual(edWrong, 0, "Wycheproof Ed25519")
+    expect(edCases > 100, "the whole suite: $edCases")
+    testsPassed()
+}

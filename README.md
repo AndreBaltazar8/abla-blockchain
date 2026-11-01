@@ -1,8 +1,8 @@
 # abla-blockchain
 
-Blockchain algorithms and formats for [Abla](https://github.com/AndreBaltazar8/ablac): hashes, curves, address formats, key derivation, and clients that read chains. Mozilla Public License 2.0.
+Blockchain algorithms and formats for [Abla](https://github.com/AndreBaltazar8/ablac): hashes, curves, signature checks, address formats, key derivation, transaction and block formats, and clients that read chains. Mozilla Public License 2.0.
 
-It reads public data only. **Nothing here signs, spends or holds a private key**, and BIP32 derivation is public only.
+It reads public data only. **Nothing here signs, spends or holds a private key**: signatures are only checked, and BIP32 derivation is public only.
 
 ```abla
 import github("AndreBaltazar8/abla-blockchain")
@@ -30,12 +30,13 @@ The library itself doesn't import TLS. The clients take any `HttpClient`, so a p
 |---|---|
 | `src/uint256` | `U256`: checked by default, wrapping as the EVM does when asked; decimal and hex text, big-endian bytes, division, `u256FormatUnits` for display |
 | `src/hash` | Keccak-256, RIPEMD-160, HASH160. SHA-2 and HMAC come from `abla/crypto` |
-| `src/curve` | secp256k1 public-key arithmetic: decompress, multiply and add, on-curve check. Not constant time, as it only takes public values |
+| `src/curve` | secp256k1 public-key arithmetic: decompress, multiply and add, on-curve check; arithmetic modulo a prime. Not constant time, as it only takes public values |
+| `src/signature` | Checking ECDSA on secp256k1, with strict DER, and Ed25519 |
 | `src/encoding` | Base58, Base58Check, Bech32, Bech32m, segwit addresses |
 | `src/net` | `ChainEndpoint`, what the clients talk through |
-| `src/bitcoin` | BIP32 public derivation and extended keys, addresses (P2WPKH, P2PKH, P2SH-P2WPKH), single-key descriptors with their checksum, BIP-21, an Esplora client |
-| `src/evm` | EIP-55 addresses, JSON-RPC for blocks, logs and receipts, ERC-20 `Transfer` decoding, EIP-681 |
-| `src/stellar` | StrKey, a Horizon client for payments, its amounts and times, SEP-7 |
+| `src/bitcoin` | BIP32 public derivation and extended keys, addresses (P2WPKH, P2PKH, P2SH-P2WPKH), single-key descriptors with their checksum, BIP-21, raw transactions and block headers, an Esplora client |
+| `src/evm` | EIP-55 addresses, JSON-RPC for blocks, logs and receipts, ERC-20 `Transfer` decoding, EIP-681, RLP, raw transactions |
+| `src/stellar` | StrKey, a Horizon client for payments, its amounts and times, SEP-7, transaction envelopes in XDR for the common operations |
 
 An amount is an integer in the asset's smallest unit, always: `U256` for wei, `int` for satoshis. No floats anywhere.
 

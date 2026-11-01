@@ -1,0 +1,126 @@
+import "abla/crypto"
+import "strkey.ab"
+
+// Stellar's transaction envelopes, in XDR, as far as the common operations go. The hash is what's signed, and what Horizon lists it by.
+
+// `kind`: payment, create_account, change_trust. `asset`: native or CODE:ISSUER. `amount` in stroops.
+class StellarOperation(val kind: string, val destination: string, val asset: string, val amount: int)
+// `reason` when not ok: malformed, or unsupported for an envelope or operation this doesn't read.
+class StellarEnvelope(val ok: bool, val reason: string, val source: string, val fee: int, val sequence: int, val memoType: string, val memo: string, val operations: array<StellarOperation>, val signatures: array<string>, val hash: string)
+fun stellarTestnetPassphrase(): string = "Test SDF Network ; September 2015"
+fun stellarPublicPassphrase(): string = "Public Global Stellar Network ; September 2015"
+private fun xdrFailed(reason: string): StellarEnvelope = StellarEnvelope(false, reason, "", 0, 0, "", "", [], [], "")
+private class XdrReader(val data: string, var at: int, var bad: bool) {
+    fun int32(): int {
+        if (this.at + 4 > this.data.size) {
+            this.bad = true
+            return 0
+        }
+        val out = (this.data[this.at] << 24) | (this.data[this.at + 1] << 16) | (this.data[this.at + 2] << 8) | this.data[this.at + 3]
+        this.at = this.at + 4
+        out
+    }
+    fun int64(): int = (this.int32() << 32) | this.int32()
+    fun fixed(count: int): string {
+        val padded = (count + 3) / 4 * 4
+        if (count < 0 || this.at + padded > this.data.size) {
+            this.bad = true
+            return ""
+        }
+        val out = this.data.slice(this.at, this.at + count)
+        this.at = this.at + padded
+        out
+    }
+    fun bytes(): string = this.fixed(this.int32())
+    // A MuxedAccount or an AccountID as G...: muxed ones lose their id here.
+    fun account(muxed: bool): string {
+        val type = this.int32()
+        if (type == 0) return strkeyEncode(48, this.fixed(32))
+        if (muxed && type == 256) {
+            this.int64()
+            return strkeyEncode(48, this.fixed(32))
+        }
+        this.bad = true
+        ""
+    }
+    fun assetCode(size: int): string {
+        val raw = this.fixed(size)
+        var end = raw.size
+        while (end > 0 && raw[end - 1] == 0) end = end - 1
+        raw.slice(0, end)
+    }
+    fun asset(): string {
+        val type = this.int32()
+        if (type == 0) return "native"
+        val code = if (type == 1) this.assetCode(4) else if (type == 2) this.assetCode(12) else ""
+        if (code == "") {
+            this.bad = true
+            return ""
+        }
+        "$code:${this.account(false)}"
+    }
+}
+// `envelope` is the raw bytes (base64Decode what Horizon gives). V1 envelopes only, as every wallet has written for years.
+fun stellarParseEnvelope(envelope: string, passphrase: string): StellarEnvelope {
+    var r = XdrReader(envelope, 0, false)
+    if (r.int32() != 2) return xdrFailed("unsupported")
+    val start = r.at
+    val source = r.account(true)
+    val fee = r.int32()
+    val sequence = r.int64()
+    val preconditions = r.int32()
+    if (preconditions == 1) {
+        r.int64()
+        r.int64()
+    } else if (preconditions != 0) {
+        return xdrFailed("unsupported")
+    }
+    val memoKind = r.int32()
+    var memoType = "none"
+    var memo = ""
+    if (memoKind == 1) {
+        memoType = "text"
+        memo = r.bytes()
+    } else if (memoKind == 2) {
+        memoType = "id"
+        memo = "${r.int64()}"
+    } else if (memoKind == 3 || memoKind == 4) {
+        memoType = if (memoKind == 3) "hash" else "return"
+        memo = hexEncode(r.fixed(32))
+    } else if (memoKind != 0) {
+        return xdrFailed("malformed")
+    }
+    val count = r.int32()
+    if (r.bad || count > 100) return xdrFailed("malformed")
+    val operations: array<StellarOperation> = []
+    for (i in 0 until count) {
+        if (r.int32() == 1) r.account(true)
+        val kind = r.int32()
+        if (kind == 0) {
+            val destination = r.account(false)
+            operations.append(StellarOperation("create_account", destination, "native", r.int64()))
+        } else if (kind == 1) {
+            val destination = r.account(true)
+            val asset = r.asset()
+            operations.append(StellarOperation("payment", destination, asset, r.int64()))
+        } else if (kind == 6) {
+            val asset = r.asset()
+            operations.append(StellarOperation("change_trust", "", asset, r.int64()))
+        } else {
+            return xdrFailed("unsupported")
+        }
+        if (r.bad) return xdrFailed("malformed")
+    }
+    if (r.int32() != 0) return xdrFailed("unsupported")
+    val end = r.at
+    val signatureCount = r.int32()
+    if (r.bad || signatureCount > 20) return xdrFailed("malformed")
+    val signatures: array<string> = []
+    for (i in 0 until signatureCount) {
+        r.fixed(4)
+        signatures.append(r.bytes())
+    }
+    if (r.bad || r.at != envelope.size) return xdrFailed("malformed")
+    val payload = "${sha256(passphrase)}${cryptoByteString([0, 0, 0, 2])}${envelope.slice(start, end)}"
+    StellarEnvelope(true, "", source, fee, sequence, memoType, memo, operations, signatures, hexEncode(sha256(payload)))
+}

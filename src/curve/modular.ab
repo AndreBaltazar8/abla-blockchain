@@ -1,0 +1,55 @@
+import "../uint256/u256.ab"
+
+// Arithmetic modulo any odd number below 2^256, for scalars. Public values only: nothing here is constant time.
+
+fun modReduce(value: U256, modulus: U256): U256 = if (u256Less(value, modulus)) value else u256DivMod(value, modulus).remainder
+fun modAdd(a: U256, b: U256, modulus: U256): U256 {
+    val sum = u256Add(a, b)
+    if (!sum.ok || !u256Less(sum.value, modulus)) return u256WrappingSub(sum.value, modulus)
+    sum.value
+}
+// Any number of little-endian 32-bit limbs, reduced a bit at a time.
+fun modReduceLimbs(limbs: array<int>, modulus: U256): U256 {
+    var out = u256Zero()
+    var i = limbs.size * 32 - 1
+    while (i >= 0) {
+        val top = out.bit(255)
+        out = u256ShiftLeft(out, 1)
+        if (((limbs[i / 32] >> (i % 32)) & 1) == 1) out = u256WrappingAdd(out, u256FromInt(1))
+        if (top == 1 || !u256Less(out, modulus)) out = u256WrappingSub(out, modulus)
+        i = i - 1
+    }
+    out
+}
+fun modMul(a: U256, b: U256, modulus: U256): U256 = modReduceLimbs(u256Product(a.w, b.w), modulus)
+// By the binary extended Euclid. Zero when there's none. `modulus` is odd.
+fun modInverse(value: U256, modulus: U256): U256 {
+    var a = modReduce(value, modulus)
+    if (a.isZero()) return a
+    var b = modulus
+    var x = u256FromInt(1)
+    var y = u256Zero()
+    val half = u256ShiftRight(u256WrappingAdd(modulus, u256FromInt(1)), 1)
+    val one = u256FromInt(1)
+    while (!a.isZero()) {
+        while ((a.w[0] & 1) == 0) {
+            a = u256ShiftRight(a, 1)
+            // Halving modulo an odd number.
+            val odd = (x.w[0] & 1) == 1
+            x = u256ShiftRight(x, 1)
+            if (odd) x = modAdd(x, half, modulus)
+        }
+        if (u256Less(a, b)) {
+            val keptA = a
+            a = b
+            b = keptA
+            val keptX = x
+            x = y
+            y = keptX
+        }
+        a = u256WrappingSub(a, b)
+        x = if (u256Less(x, y)) u256WrappingAdd(u256WrappingSub(x, y), modulus) else u256WrappingSub(x, y)
+    }
+    if (!u256Equal(b, one)) return u256Zero()
+    y
+}

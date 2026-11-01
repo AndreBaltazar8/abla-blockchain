@@ -1,0 +1,108 @@
+import "abla/crypto"
+import "../hash/keccak.ab"
+import "../uint256/u256.ab"
+import "address.ab"
+
+// RLP, and Ethereum's transactions in it: legacy, EIP-2930 and EIP-1559.
+
+// `list` says which of its fields means anything.
+class RlpItem(val list: bool, val bytes: string, val items: array<RlpItem>)
+class RlpDecoded(val ok: bool, val item: RlpItem)
+fun rlpBytes(value: string): RlpItem = RlpItem(false, value, [])
+fun rlpList(items: array<RlpItem>): RlpItem = RlpItem(true, "", items)
+private fun rlpBigEndian(value: int): string {
+    var out = ""
+    var rest = value
+    while (rest > 0) {
+        out = "${cryptoByteString([rest & 255])}$out"
+        rest = rest >> 8
+    }
+    out
+}
+private fun rlpLength(size: int, base: int): string {
+    if (size < 56) return cryptoByteString([base + size])
+    val length = rlpBigEndian(size)
+    "${cryptoByteString([base + 55 + length.size])}$length"
+}
+fun rlpEncode(item: RlpItem): string {
+    if (!item.list) {
+        if (item.bytes.size == 1 && item.bytes[0] < 128) return item.bytes
+        return "${rlpLength(item.bytes.size, 128)}${item.bytes}"
+    }
+    var body = ""
+    for (i in item.items) body = "$body${rlpEncode(i)}"
+    "${rlpLength(body.size, 192)}$body"
+}
+private class RlpStep(val ok: bool, val item: RlpItem, val next: int)
+private fun rlpBad(): RlpStep = RlpStep(false, rlpBytes(""), 0)
+// Strict: a long form where a short one would do, or a single low byte wrapped as a string, is refused.
+private fun rlpRead(data: string, at: int, depth: int): RlpStep {
+    if (at >= data.size || depth > 64) return rlpBad()
+    val first = data[at]
+    if (first < 128) return RlpStep(true, rlpBytes(data.slice(at, at + 1)), at + 1)
+    var start = at + 1
+    var size = 0
+    val isList = first >= 192
+    val low = first - (if (isList) 192 else 128)
+    if (low < 56) {
+        size = low
+    } else {
+        val lengthSize = low - 55
+        if (lengthSize > 7 || start + lengthSize > data.size || data[start] == 0) return rlpBad()
+        for (i in 0 until lengthSize) size = (size << 8) | data[start + i]
+        if (size < 56) return rlpBad()
+        start = start + lengthSize
+    }
+    if (size < 0 || start + size > data.size) return rlpBad()
+    val end = start + size
+    if (!isList) {
+        if (size == 1 && data[start] < 128) return rlpBad()
+        return RlpStep(true, rlpBytes(data.slice(start, end)), end)
+    }
+    val items: array<RlpItem> = []
+    var position = start
+    while (position < end) {
+        val step = rlpRead(data, position, depth + 1)
+        if (!step.ok || step.next > end) return rlpBad()
+        items.append(step.item)
+        position = step.next
+    }
+    RlpStep(true, rlpList(items), end)
+}
+fun rlpDecode(data: string): RlpDecoded {
+    val step = rlpRead(data, 0, 0)
+    RlpDecoded(step.ok && step.next == data.size, step.item)
+}
+// `kind`: 0 legacy, 1 EIP-2930, 2 EIP-1559. chainId is 0 for a legacy one from before EIP-155. `to` is "" for one creating a contract.
+class EvmRawTransaction(val ok: bool, val kind: int, val hash: string, val chainId: int, val nonce: int, val to: string, val value: U256, val input: string)
+private fun evmRawInt(item: RlpItem): int {
+    var out = 0
+    for (i in 0 until item.bytes.size) out = (out << 8) | item.bytes[i]
+    out
+}
+private fun evmRawBad(): EvmRawTransaction = EvmRawTransaction(false, 0, "", 0, 0, "", u256Zero(), "")
+fun evmParseTransaction(raw: string): EvmRawTransaction {
+    if (raw.size == 0) return evmRawBad()
+    val typed = raw[0] < 128
+    if (typed && raw[0] != 1 && raw[0] != 2) return evmRawBad()
+    val decoded = rlpDecode(if (typed) raw.slice(1, raw.size) else raw)
+    if (!decoded.ok || !decoded.item.list) return evmRawBad()
+    val f = decoded.item.items
+    val kind = if (typed) raw[0] else 0
+    // Where nonce, to, value and input are.
+    val nonceAt = if (kind == 2) 1 else if (kind == 1) 1 else 0
+    val toAt = if (kind == 2) 5 else if (kind == 1) 4 else 3
+    val expected = if (kind == 2) 12 else if (kind == 1) 11 else 9
+    if (f.size != expected || f[toAt].list || f[toAt + 1].list || f[toAt + 2].list) return evmRawBad()
+    val value = u256FromBytes(f[toAt + 1].bytes)
+    if (!value.ok) return evmRawBad()
+    val to = f[toAt].bytes
+    if (to.size != 0 && to.size != 20) return evmRawBad()
+    var chainId = 0
+    if (typed) chainId = evmRawInt(f[0])
+    else {
+        val v = evmRawInt(f[6])
+        if (v >= 35) chainId = (v - 35) / 2
+    }
+    EvmRawTransaction(true, kind, "0x${hexEncode(keccak256(raw))}", chainId, evmRawInt(f[nonceAt]), if (to.size == 20) eip55FromBytes(to) else "", value.value, f[toAt + 2].bytes)
+}
