@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Vectors for tests/wallet_test.ab from tools that aren't this library. Run by hand, and the result is committed.
-   uv run --no-project --python python3 --with eth-account==0.13.7 tools/sign_vectors.py BIP32_MEDIAWIKI MNEMONIC_VECTORS_JSON STELLAR_WALLET_DIR"""
+   uv run --no-project --python python3 --with eth-account==0.13.7 tools/sign_vectors.py BIP32_MEDIAWIKI MNEMONIC_VECTORS_JSON"""
 import hashlib,json,re,sys
 from eth_account import Account
 from eth_keys import keys
-sys.path.insert(0,sys.argv[3])
-import stellar_wallet as ed
+import os
+sys.path.insert(0,os.path.dirname(os.path.abspath(__file__)))
+import stellar_python as ed
 out={}
 # BIP-32's own text: seeds and, for each chain, the extended private and public keys.
 text=open(sys.argv[1]).read();vectors=[]

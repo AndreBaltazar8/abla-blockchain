@@ -34,3 +34,4 @@ Fixtures in `tests/fixtures` are real public answers, captured on 2026-11-01: a 
 | BIP-143 | Its native P2WPKH example: digest and signature | `wallet_test` |
 | EIP-1559 | 4 from eth-account, byte for byte | `wallet_test` |
 | Stellar envelopes | 3 from a separate Python builder, byte for byte; this library's parser | `wallet_test` |
+| Accepted by real networks | Signed by `wallet`, and confirmed on 2026-11-02. Signet `5e99a7033969f39e9550129241b979a2a2b535c9bc96f30420a25e5d3efa97b9`; Sepolia USDC `0x627493199b84cabb4e61aea4cbdde74dc514926daac30fa33129b28d06a4c5d7`; Stellar testnet `37842a6f0942edd33237049ab7a6f6d83a9edf50e4b5d52b8375124d33546751` | by hand, from a test wallet |
