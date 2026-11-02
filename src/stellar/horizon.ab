@@ -36,7 +36,7 @@ fun stellarLedgerCursor(ledger: int): string = "${ledger * 4294967296}"
 // `hasAmount` is false for an account merge: Horizon doesn't say how much in this list.
 class HorizonPayment(
     val id: string, val pagingToken: string, val kind: string, val to: string, val from: string,
-    val hasAmount: bool, val amount: U256, val asset: string,
+    val hasAmount: bool, val amount: uint256, val asset: string,
     val transactionHash: string, val memo: string, val memoType: string, val ledger: int, val feeCharged: string, val time: int
 )
 fun horizonPaymentFrom(r: Json): HorizonPayment {

@@ -2,20 +2,20 @@ import "abla/crypto"
 import "../uint256/u256.ab"
 
 // secp256k1 for public keys: nothing here takes a secret. Timing doesn't matter, since every input is
-// public, so it's plain double-and-add with no attempt at constant time. Field elements are U256 below p.
+// public, so it's plain double-and-add with no attempt at constant time. Field elements are uint256 below p.
 
 // Parsed once: these are read for every field operation.
 private val secpPrimeValue = u256FromHex("fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f").value
-private fun secpPrime(): U256 = secpPrimeValue
+private fun secpPrime(): uint256 = secpPrimeValue
 private val secpOrderValue = u256FromHex("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141").value
-fun secpOrder(): U256 = secpOrderValue
+fun secpOrder(): uint256 = secpOrderValue
 private val secpGxValue = u256FromHex("79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798").value
-private fun secpGx(): U256 = secpGxValue
+private fun secpGx(): uint256 = secpGxValue
 private val secpGyValue = u256FromHex("483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8").value
-private fun secpGy(): U256 = secpGyValue
+private fun secpGy(): uint256 = secpGyValue
 
 // 2^256 mod p is 977 + 2^32, so what's above 256 bits folds in with that factor.
-private fun fieldFold(limbs: array<int>): U256 {
+private fun fieldFold(limbs: array<int>): uint256 {
     var low: array<int> = u256Limbs(limbs, 0, 8)
     var rest = u256Limbs(limbs, 8, limbs.size)
     for (pass in 0 until 2) {
@@ -33,7 +33,7 @@ private fun fieldFold(limbs: array<int>): U256 {
         low = u256Limbs(sum, 0, 8)
         rest = u256Limbs(sum, 8, 11)
     }
-    var out = U256(low)
+    var out = u256FromLimbs(low)
     val p = secpPrime()
     if (rest[0] != 0 || rest[1] != 0 || rest[2] != 0) {
         // At most one more 2^256 can remain.
@@ -42,33 +42,33 @@ private fun fieldFold(limbs: array<int>): U256 {
     while (!u256Less(out, p)) out = u256WrappingSub(out, p)
     out
 }
-private fun fieldAdd(a: U256, b: U256): U256 {
+private fun fieldAdd(a: uint256, b: uint256): uint256 {
     val sum = u256Carrying(a, b)
     val p = secpPrime()
     if (!sum.ok || !u256Less(sum.value, p)) return u256WrappingSub(sum.value, p)
     sum.value
 }
-private fun fieldSub(a: U256, b: U256): U256 {
+private fun fieldSub(a: uint256, b: uint256): uint256 {
     val difference = u256Borrowing(a, b)
     if (!difference.ok) return u256WrappingAdd(difference.value, secpPrime())
     difference.value
 }
-private fun fieldMul(a: U256, b: U256): U256 = fieldFold(u256Product(a.w, b.w))
-private fun fieldSquare(a: U256): U256 = fieldMul(a, a)
-private fun fieldPower(base: U256, exponent: U256): U256 {
+private fun fieldMul(a: uint256, b: uint256): uint256 = fieldFold(u256Product(u256LimbsOf(a), u256LimbsOf(b)))
+private fun fieldSquare(a: uint256): uint256 = fieldMul(a, a)
+private fun fieldPower(base: uint256, exponent: uint256): uint256 {
     var out = u256FromInt(1)
     var i = exponent.bitLength() - 1
     while (i >= 0) {
         out = fieldSquare(out)
-        if (exponent.bit(i) == 1) out = fieldMul(out, base)
+        if (exponent.bit(i)) out = fieldMul(out, base)
         i = i - 1
     }
     out
 }
-private fun fieldInverse(a: U256): U256 = fieldPower(a, u256WrappingSub(secpPrime(), u256FromInt(2)))
+private fun fieldInverse(a: uint256): uint256 = fieldPower(a, u256WrappingSub(secpPrime(), u256FromInt(2)))
 
-class SecpPoint(val infinity: bool, val x: U256, val y: U256)
-private class SecpJacobian(val infinity: bool, val x: U256, val y: U256, val z: U256)
+class SecpPoint(val infinity: bool, val x: uint256, val y: uint256)
+private class SecpJacobian(val infinity: bool, val x: uint256, val y: uint256, val z: uint256)
 private fun secpInfinity(): SecpJacobian = SecpJacobian(true, u256Zero(), u256FromInt(1), u256Zero())
 private fun jacobianDouble(p: SecpJacobian): SecpJacobian {
     if (p.infinity || p.y.isZero()) return secpInfinity()
@@ -81,7 +81,7 @@ private fun jacobianDouble(p: SecpJacobian): SecpJacobian {
     val y = fieldSub(fieldMul(m, fieldSub(s, x)), fieldMul(u256FromInt(8), yyyy))
     SecpJacobian(false, x, y, fieldMul(fieldAdd(p.y, p.y), p.z))
 }
-private fun jacobianAddAffine(p: SecpJacobian, qx: U256, qy: U256): SecpJacobian {
+private fun jacobianAddAffine(p: SecpJacobian, qx: uint256, qy: uint256): SecpJacobian {
     if (p.infinity) return SecpJacobian(false, qx, qy, u256FromInt(1))
     val zz = fieldSquare(p.z)
     val u2 = fieldMul(qx, zz)
@@ -107,12 +107,12 @@ private fun jacobianToPoint(p: SecpJacobian): SecpPoint {
 }
 fun secpGenerator(): SecpPoint = SecpPoint(false, secpGx(), secpGy())
 // scalar * point, then add. This is what a BIP32 public child needs: IL * G + K.
-fun secpMultiplyAdd(scalar: U256, point: SecpPoint, addend: SecpPoint): SecpPoint {
+fun secpMultiplyAdd(scalar: uint256, point: SecpPoint, addend: SecpPoint): SecpPoint {
     var out = secpInfinity()
     var i = scalar.bitLength() - 1
     while (i >= 0) {
         out = jacobianDouble(out)
-        if (scalar.bit(i) == 1) out = jacobianAddAffine(out, point.x, point.y)
+        if (scalar.bit(i)) out = jacobianAddAffine(out, point.x, point.y)
         i = i - 1
     }
     if (!addend.infinity) out = jacobianAddAffine(out, addend.x, addend.y)
@@ -134,10 +134,10 @@ fun secpDecompress(key: string): SecpPoint {
     val exponent = u256ShiftRight(u256Carrying(secpPrime(), u256FromInt(1)).value, 2)
     var y = fieldPower(right, exponent)
     if (!u256Equal(fieldSquare(y), right)) return none
-    if ((y.w[0] & 1) != (key[0] & 1)) y = fieldSub(u256Zero(), y)
+    if (y.bit(0) != ((key[0] & 1) == 1)) y = fieldSub(u256Zero(), y)
     SecpPoint(false, x, y)
 }
-fun secpCompress(p: SecpPoint): string = "${cryptoByte(if ((p.y.w[0] & 1) == 1) 3 else 2)}${p.x.toBytes()}"
+fun secpCompress(p: SecpPoint): string = "${cryptoByte(if (p.y.bit(0)) 3 else 2)}${p.x.toBytes()}"
 fun secpUncompressedXY(p: SecpPoint): string = "${p.x.toBytes()}${p.y.toBytes()}"
 private fun cryptoByte(value: int): string = cryptoByteString([value])
 // 02/03 + x, or 04 + x + y. Infinity when it isn't a point on the curve.

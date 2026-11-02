@@ -15,4 +15,3 @@
 - [ ] Schnorr (BIP-340) and P2TR spends, with taproot.
 - [ ] Taproot: `tr(...)` descriptors, P2TR addresses, which need key tweaking.
 - [ ] Muxed Stellar accounts (`M...`).
-- [ ] When ablac gets its own `uint256` (its TODO.md), move to it. This type's surface is what's asked of it.

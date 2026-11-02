@@ -54,7 +54,7 @@ All of a package's subpaths are one locked revision, so a program can use severa
 
 | Folder | |
 |---|---|
-| `src/uint256` | `U256`: checked by default, wrapping as the EVM does when asked; decimal and hex text, big-endian bytes, division, `u256FormatUnits` for display |
+| `src/uint256` | ablac's `uint256` (`abla/uint256`) with checked forms in one shape, the sixteen-limb product the curves use, and `u256FormatUnits` for display |
 | `src/hash` | Keccak-256, RIPEMD-160, HASH160. SHA-2 and HMAC come from `abla/crypto` |
 | `src/curve` | secp256k1 public-key arithmetic: decompress, multiply and add, on-curve check; arithmetic modulo a prime. Not constant time, as it only takes public values |
 | `src/signature` | Checking ECDSA on secp256k1, with strict DER, and Ed25519 |
@@ -64,7 +64,7 @@ All of a package's subpaths are one locked revision, so a program can use severa
 | `src/evm` | EIP-55 addresses, JSON-RPC for blocks, logs and receipts, ERC-20 `Transfer` decoding, EIP-681, RLP, raw transactions |
 | `src/stellar` | StrKey, a Horizon client for payments, its amounts and times, SEP-7, transaction envelopes in XDR for the common operations |
 
-An amount is an integer in the asset's smallest unit, always: `U256` for wei, `int` for satoshis. No floats anywhere.
+An amount is an integer in the asset's smallest unit, always: `uint256` for wei, `int` for satoshis. No floats anywhere.
 
 ## Testing
 

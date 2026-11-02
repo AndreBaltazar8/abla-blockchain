@@ -5,10 +5,10 @@ import "address.ab"
 
 // Ethereum's JSON-RPC, for any EVM chain: the calls that read blocks, logs and receipts. Addresses come as the node writes them, lower case.
 
-class EvmTransaction(val hash: string, val from: string, val to: string, val value: U256, val input: string)
+class EvmTransaction(val hash: string, val from: string, val to: string, val value: uint256, val input: string)
 class EvmBlock(val number: int, val hash: string, val parentHash: string, val timestamp: int, val transactions: array<EvmTransaction>)
 class EvmLog(val address: string, val topics: array<string>, val data: string, val blockNumber: int, val blockHash: string, val transactionHash: string, val logIndex: int, val removed: bool)
-class EvmReceipt(val succeeded: bool, val gasUsed: U256, val effectiveGasPrice: U256) {
+class EvmReceipt(val succeeded: bool, val gasUsed: uint256, val effectiveGasPrice: uint256) {
     // What the sender paid, in wei.
     fun fee(): U256Checked = u256Mul(this.gasUsed, this.effectiveGasPrice)
 }
@@ -23,9 +23,9 @@ fun evmQuantity(value: int): string = u256FromInt(value).toHex()
 fun evmQuantityInt(text: string): int {
     val parsed = u256FromHex(text)
     if (!parsed.ok) return 0
-    parsed.value.w[0] | (parsed.value.w[1] << 32)
+    parsed.value.toInt()
 }
-private fun evmAmount(text: string): U256 {
+private fun evmAmount(text: string): uint256 {
     val parsed = u256FromHex(text)
     if (parsed.ok) parsed.value else u256Zero()
 }

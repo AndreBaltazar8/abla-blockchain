@@ -8,7 +8,7 @@ import "../src/wallet/entry.ab"
 
 // Official vectors where there are any: BIP-32, BIP-39, RFC 6979 and EIP-155's published signatures, RFC 8032, BIP-143. tools/sign_vectors.py's from other implementations otherwise: eth-keys, eth-account,
 // a plain Python Ed25519. Wycheproof's files have no private keys, so its role is the verifier these signatures must get past, which is tested against all of them in signature_test.
-fun bigOf(text: string): U256 = u256FromDecimal(text).value
+fun bigOf(text: string): uint256 = u256FromDecimal(text).value
 fun derOf(value: string): EcdsaSignature = ecdsaParseDer(value)
 fun main {
     val v = jsonParse(linuxReadFile("tests/fixtures/wallet/vectors.json", 4194304), jsonPermissiveLimits).value

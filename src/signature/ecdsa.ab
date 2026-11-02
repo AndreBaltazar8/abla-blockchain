@@ -5,7 +5,7 @@ import "../curve/secp256k1.ab"
 
 // Checking ECDSA signatures on secp256k1. Only checking: nothing here signs.
 
-class EcdsaSignature(val ok: bool, val r: U256, val s: U256)
+class EcdsaSignature(val ok: bool, val r: uint256, val s: uint256)
 private fun ecdsaBad(): EcdsaSignature = EcdsaSignature(false, u256Zero(), u256Zero())
 // One strict DER INTEGER at `at`: its value's start and end, or -1. It has to be positive, and minimal.
 private fun derInteger(der: string, at: int): array<int> {

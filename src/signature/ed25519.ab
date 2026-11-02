@@ -5,15 +5,15 @@ import "../curve/modular.ab"
 // Checking Ed25519 signatures (RFC 8032), as Stellar's. Only checking: nothing here signs. Public values, so not constant time.
 
 private val edPrimeValue = u256FromHex("7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffed").value
-private fun edPrime(): U256 = edPrimeValue
+private fun edPrime(): uint256 = edPrimeValue
 private val edOrderValue = u256FromHex("1000000000000000000000000000000014def9dea2f79cd65812631a5cf5d3ed").value
-private fun edOrder(): U256 = edOrderValue
+private fun edOrder(): uint256 = edOrderValue
 private val edDValue = u256FromHex("52036cee2b6ffe738cc740797779e89800700a4d4141d8ab75eb4dca135978a3").value
-private fun edD(): U256 = edDValue
+private fun edD(): uint256 = edDValue
 private val edRootValue = u256FromHex("2b8324804fc1df0b2b4d00993dfbd7a72f431806ad2fe478c4ee1b274a0ea0b0").value
-private fun edRootMinusOne(): U256 = edRootValue
+private fun edRootMinusOne(): uint256 = edRootValue
 // 2^256 is 38 modulo p, so what's above folds in with that factor.
-private fun edFold(limbs: array<int>): U256 {
+private fun edFold(limbs: array<int>): uint256 {
     var low = u256Limbs(limbs, 0, 8)
     var high = u256Limbs(limbs, 8, 16)
     for (pass in 0 until 2) {
@@ -30,35 +30,35 @@ private fun edFold(limbs: array<int>): U256 {
         low = u256Limbs(next, 0, 8)
         high = u256Limbs(next, 8, 10)
     }
-    var out = U256(low)
+    var out = u256FromLimbs(low)
     val p = edPrime()
     if (high[0] != 0) out = u256WrappingAdd(out, u256FromInt(38))
     while (!u256Less(out, p)) out = u256WrappingSub(out, p)
     out
 }
-private fun edAdd(a: U256, b: U256): U256 {
+private fun edAdd(a: uint256, b: uint256): uint256 {
     val sum = u256Add(a, b)
     val p = edPrime()
     if (!sum.ok || !u256Less(sum.value, p)) return u256WrappingSub(sum.value, p)
     sum.value
 }
-private fun edSub(a: U256, b: U256): U256 {
+private fun edSub(a: uint256, b: uint256): uint256 {
     val difference = u256Borrowing(a, b)
     if (!difference.ok) return u256WrappingAdd(difference.value, edPrime())
     difference.value
 }
-private fun edMul(a: U256, b: U256): U256 = edFold(u256Product(a.w, b.w))
-private fun edPower(base: U256, exponent: U256): U256 {
+private fun edMul(a: uint256, b: uint256): uint256 = edFold(u256Product(u256LimbsOf(a), u256LimbsOf(b)))
+private fun edPower(base: uint256, exponent: uint256): uint256 {
     var out = u256FromInt(1)
     var i = exponent.bitLength() - 1
     while (i >= 0) {
         out = edMul(out, out)
-        if (exponent.bit(i) == 1) out = edMul(out, base)
+        if (exponent.bit(i)) out = edMul(out, base)
         i = i - 1
     }
     out
 }
-private class EdPoint(val x: U256, val y: U256, val z: U256, val t: U256)
+private class EdPoint(val x: uint256, val y: uint256, val z: uint256, val t: uint256)
 private fun edIdentity(): EdPoint = EdPoint(u256Zero(), u256FromInt(1), u256FromInt(1), u256Zero())
 private fun edPointAdd(p: EdPoint, q: EdPoint): EdPoint {
     val a = edMul(edSub(p.y, p.x), edSub(q.y, q.x))
@@ -73,17 +73,17 @@ private fun edPointAdd(p: EdPoint, q: EdPoint): EdPoint {
     val h = edAdd(b, a)
     EdPoint(edMul(e, f), edMul(g, h), edMul(f, g), edMul(e, h))
 }
-private fun edScalar(scalar: U256, point: EdPoint): EdPoint {
+private fun edScalar(scalar: uint256, point: EdPoint): EdPoint {
     var out = edIdentity()
     var i = scalar.bitLength() - 1
     while (i >= 0) {
         out = edPointAdd(out, out)
-        if (scalar.bit(i) == 1) out = edPointAdd(out, point)
+        if (scalar.bit(i)) out = edPointAdd(out, point)
         i = i - 1
     }
     out
 }
-private fun edLittleEndian(bytes: string): U256 {
+private fun edLittleEndian(bytes: string): uint256 {
     val out: array<int> = []
     var i = bytes.size - 1
     while (i >= 0) {
@@ -99,7 +99,7 @@ private fun edDecode(bytes: string): EdDecoded {
     if (bytes.size != 32) return bad
     val full = edLittleEndian(bytes)
     val sign = full.bit(255)
-    val y = if (sign == 1) u256WrappingSub(full, u256ShiftLeft(u256FromInt(1), 255)) else full
+    val y = if (sign) u256WrappingSub(full, u256ShiftLeft(u256FromInt(1), 255)) else full
     if (!u256Less(y, edPrime())) return bad
     val yy = edMul(y, y)
     val one = u256FromInt(1)
@@ -115,8 +115,8 @@ private fun edDecode(bytes: string): EdDecoded {
         if (!u256Equal(check, edSub(u256Zero(), u))) return bad
         x = edMul(x, edRootMinusOne())
     }
-    if (x.isZero() && sign == 1) return bad
-    if ((x.w[0] & 1) != sign) x = edSub(u256Zero(), x)
+    if (x.isZero() && sign) return bad
+    if (x.bit(0) != sign) x = edSub(u256Zero(), x)
     EdDecoded(true, EdPoint(x, y, one, edMul(x, y)))
 }
 private fun edBase(): EdPoint {

@@ -1,54 +1,58 @@
 import "abla/crypto"
+export import "abla/uint256"
 
-// Unsigned 256-bit integers: eight 32-bit limbs in `w`, least significant first. A value never changes.
-// Arithmetic is checked by default, and says when it doesn't fit; the wrapping forms behave as the EVM's do.
+// ablac's `uint256`, and what's asked of it here on top of abla/uint256: arithmetic that says when it doesn't fit, in one
+// shape, and the wider product and display that the curves and amounts want. Checked by default; the wrapping forms behave as the EVM's do.
 
-class U256(val w: array<int>)
-class U256Checked(val ok: bool, val value: U256)
-class U256Division(val quotient: U256, val remainder: U256)
+class U256Checked(val ok: bool, val value: uint256)
+class U256Division(val quotient: uint256, val remainder: uint256)
 
-fun u256Zero(): U256 = U256([0, 0, 0, 0, 0, 0, 0, 0])
-fun u256FromInt(value: int): U256 {
-    if (value < 0) return u256Zero()
-    U256([value & 4294967295, (value >> 32) & 2147483647, 0, 0, 0, 0, 0, 0])
+private fun u256Checked(value: uint256?): U256Checked = if (value == null) U256Checked(false, uint256(0)) else U256Checked(true, value)
+
+fun u256Zero(): uint256 = uint256(0)
+fun u256FromInt(value: int): uint256 = if (value < 0) uint256(0) else uint256(value)
+fun u256Compare(a: uint256, b: uint256): int = if (a < b) -1 else if (a > b) 1 else 0
+fun u256Equal(a: uint256, b: uint256): bool = a == b
+fun u256Less(a: uint256, b: uint256): bool = a < b
+fun u256Max(a: uint256, b: uint256): uint256 = if (a < b) b else a
+fun u256Min(a: uint256, b: uint256): uint256 = if (a < b) a else b
+
+// With what didn't fit dropped, as the EVM has it.
+fun u256Carrying(a: uint256, b: uint256): U256Checked {
+    val sum = a + b
+    U256Checked(sum >= a, sum)
 }
-fun U256.isZero(): bool {
-    for (limb in this.w) if (limb != 0) return false
-    true
+fun u256Borrowing(a: uint256, b: uint256): U256Checked = U256Checked(a >= b, a - b)
+fun u256Multiplying(a: uint256, b: uint256): U256Checked = U256Checked(a.mulChecked(b) != null, a * b)
+fun u256Add(a: uint256, b: uint256): U256Checked = u256Carrying(a, b)
+fun u256Sub(a: uint256, b: uint256): U256Checked = u256Borrowing(a, b)
+fun u256Mul(a: uint256, b: uint256): U256Checked = u256Multiplying(a, b)
+fun u256WrappingAdd(a: uint256, b: uint256): uint256 = a + b
+fun u256WrappingSub(a: uint256, b: uint256): uint256 = a - b
+fun u256WrappingMul(a: uint256, b: uint256): uint256 = a * b
+// A subtraction that has to fit, or nothing: what's owed never goes below zero.
+fun u256Saturating(a: uint256, b: uint256): uint256 = if (a < b) uint256(0) else a - b
+fun u256ShiftLeft(a: uint256, bits: int): uint256 = a << bits
+fun u256ShiftRight(a: uint256, bits: int): uint256 = a >> bits
+
+// Eight 32-bit limbs, least significant first, for what works in a wider number than this: the curves' products.
+fun u256LimbsOf(a: uint256): array<int> {
+    val out: array<int> = []
+    var rest = a
+    for (i in 0 until 8) {
+        out.append(int(rest.toU32()))
+        rest = rest >> 32
+    }
+    out
 }
-fun u256Compare(a: U256, b: U256): int {
+fun u256FromLimbs(limbs: array<int>): uint256 {
+    var out = uint256(0)
     var i = 7
     while (i >= 0) {
-        if (a.w[i] < b.w[i]) return -1
-        if (a.w[i] > b.w[i]) return 1
+        out = (out << 32) | uint256(limbs[i])
         i = i - 1
     }
-    0
-}
-fun u256Equal(a: U256, b: U256): bool = u256Compare(a, b) == 0
-fun u256Less(a: U256, b: U256): bool = u256Compare(a, b) < 0
-fun u256Max(a: U256, b: U256): U256 = if (u256Less(a, b)) b else a
-fun u256Min(a: U256, b: U256): U256 = if (u256Less(a, b)) a else b
-
-fun u256Carrying(a: U256, b: U256): U256Checked {
-    val out: array<int> = []
-    var carry = 0
-    for (i in 0 until 8) {
-        val sum = a.w[i] + b.w[i] + carry
-        out.append(sum & 4294967295)
-        carry = sum >> 32
-    }
-    U256Checked(carry == 0, U256(out))
-}
-fun u256Borrowing(a: U256, b: U256): U256Checked {
-    val out: array<int> = []
-    var borrow = 0
-    for (i in 0 until 8) {
-        val difference = a.w[i] - b.w[i] - borrow
-        out.append(difference & 4294967295)
-        borrow = if (difference < 0) 1 else 0
-    }
-    U256Checked(borrow == 0, U256(out))
+    out
 }
 fun u256Limbs(from: array<int>, start: int, end: int): array<int> {
     val out: array<int> = []
@@ -73,194 +77,42 @@ fun u256Product(a: array<int>, b: array<int>): array<int> {
     }
     out
 }
-fun u256Multiplying(a: U256, b: U256): U256Checked {
-    val full = u256Product(a.w, b.w)
-    var fits = true
-    for (i in 8 until 16) if (full[i] != 0) fits = false
-    U256Checked(fits, U256(u256Limbs(full, 0, 8)))
-}
-fun u256Add(a: U256, b: U256): U256Checked = u256Carrying(a, b)
-fun u256Sub(a: U256, b: U256): U256Checked = u256Borrowing(a, b)
-fun u256Mul(a: U256, b: U256): U256Checked = u256Multiplying(a, b)
-fun u256WrappingAdd(a: U256, b: U256): U256 = u256Carrying(a, b).value
-fun u256WrappingSub(a: U256, b: U256): U256 = u256Borrowing(a, b).value
-fun u256WrappingMul(a: U256, b: U256): U256 = u256Multiplying(a, b).value
-// A subtraction that has to fit, or nothing: what's owed never goes below zero.
-fun u256Saturating(a: U256, b: U256): U256 = if (u256Less(a, b)) u256Zero() else u256Borrowing(a, b).value
 
-fun u256ShiftLeft(a: U256, bits: int): U256 {
-    val limbs = bits / 32
-    val rest = bits % 32
-    val out: array<int> = []
-    for (i in 0 until 8) {
-        var limb = 0
-        if (i >= limbs) {
-            limb = a.w[i - limbs] << rest
-            if (rest > 0 && i - limbs - 1 >= 0) limb = limb | (a.w[i - limbs - 1] >> (32 - rest))
-        }
-        out.append(limb & 4294967295)
-    }
-    U256(out)
-}
-fun u256ShiftRight(a: U256, bits: int): U256 {
-    val limbs = bits / 32
-    val rest = bits % 32
-    val out: array<int> = []
-    for (i in 0 until 8) {
-        var limb = 0
-        if (i + limbs < 8) {
-            limb = a.w[i + limbs] >> rest
-            if (rest > 0 && i + limbs + 1 < 8) limb = limb | (a.w[i + limbs + 1] << (32 - rest))
-        }
-        out.append(limb & 4294967295)
-    }
-    U256(out)
-}
-fun U256.bit(index: int): int = (this.w[index / 32] >> (index % 32)) & 1
-fun U256.bitLength(): int {
-    var i = 255
-    while (i >= 0) {
-        if (this.bit(i) == 1) return i + 1
-        i = i - 1
-    }
-    0
-}
-// Long division. By zero gives zero and zero: callers ask only with a divisor they've built.
-fun u256DivMod(a: U256, b: U256): U256Division {
-    if (b.isZero()) return U256Division(u256Zero(), u256Zero())
-    var quotient = u256Zero()
-    var remainder = u256Zero()
-    var i = a.bitLength() - 1
-    while (i >= 0) {
-        val top = remainder.bit(255)
-        remainder = u256ShiftLeft(remainder, 1)
-        if (a.bit(i) == 1) remainder = u256Carrying(remainder, u256FromInt(1)).value
-        if (top == 1 || !u256Less(remainder, b)) {
-            remainder = u256Borrowing(remainder, b).value
-            quotient = u256Carrying(quotient, u256ShiftLeft(u256FromInt(1), i)).value
-        }
-        i = i - 1
-    }
-    U256Division(quotient, remainder)
-}
-private fun u256DivideSmall(var limbs: array<int>, divisor: int): int {
-    var remainder = 0
-    var i = limbs.size - 1
-    while (i >= 0) {
-        val current = (remainder << 32) | limbs[i]
-        limbs[i] = current / divisor
-        remainder = current % divisor
-        i = i - 1
-    }
-    remainder
+// By zero gives zero and zero: callers ask only with a divisor they've built.
+fun u256DivMod(a: uint256, b: uint256): U256Division {
+    if (b.isZero()) return U256Division(uint256(0), uint256(0))
+    U256Division(a / b, a % b)
 }
 fun u256PowerOfTen(exponent: int): U256Checked {
-    var out = u256FromInt(1)
-    val ten = u256FromInt(10)
+    var out = uint256(1)
+    val ten = uint256(10)
     for (i in 0 until exponent) {
-        val next = u256Multiplying(out, ten)
-        if (!next.ok) return U256Checked(false, u256Zero())
-        out = next.value
+        val next = out.mulChecked(ten)
+        if (next == null) return U256Checked(false, uint256(0))
+        out = next
     }
     U256Checked(true, out)
 }
 
-fun U256.toDecimal(): string {
-    val limbs: array<int> = []
-    for (limb in this.w) limbs.append(limb)
-    val digits: array<int> = []
-    var nonzero = !this.isZero()
-    while (nonzero) {
-        val rest = u256DivideSmall(limbs, 10)
-        digits.append(48 + rest)
-        nonzero = false
-        for (limb in limbs) if (limb != 0) nonzero = true
-    }
-    if (digits.size == 0) return "0"
-    val out: array<int> = []
-    var i = digits.size - 1
-    while (i >= 0) {
-        out.append(digits[i])
-        i = i - 1
-    }
-    cryptoByteString(out)
-}
 // Digits only: no sign, no space, no point. Leading zeros are allowed.
-fun u256FromDecimal(text: string): U256Checked {
-    if (text.size == 0 || text.size > 200) return U256Checked(false, u256Zero())
-    var out = u256Zero()
-    val ten = u256FromInt(10)
-    for (i in 0 until text.size) {
-        val c = text[i]
-        if (c < 48 || c > 57) return U256Checked(false, u256Zero())
-        val scaled = u256Multiplying(out, ten)
-        if (!scaled.ok) return U256Checked(false, u256Zero())
-        val added = u256Carrying(scaled.value, u256FromInt(c - 48))
-        if (!added.ok) return U256Checked(false, u256Zero())
-        out = added.value
-    }
-    U256Checked(true, out)
-}
+fun u256FromDecimal(text: string): U256Checked = if (text.size > 200) U256Checked(false, uint256(0)) else u256Checked(uint256FromDecimal(text))
 // With or without 0x, as a JSON-RPC quantity or a 32-byte word.
-fun u256FromHex(text: string): U256Checked {
-    var start = 0
-    if (text.size >= 2 && text[0] == 48 && (text[1] == 120 || text[1] == 88)) start = 2
-    if (text.size == start) return U256Checked(false, u256Zero())
-    var out = u256Zero()
-    for (i in start until text.size) {
-        val c = text[i]
-        var digit = -1
-        if (c >= 48 && c <= 57) digit = c - 48
-        if (c >= 97 && c <= 102) digit = c - 87
-        if (c >= 65 && c <= 70) digit = c - 55
-        if (digit < 0 || out.bit(255) + out.bit(254) + out.bit(253) + out.bit(252) > 0) return U256Checked(false, u256Zero())
-        out = u256ShiftLeft(out, 4)
-        out = u256Carrying(out, u256FromInt(digit)).value
-    }
-    U256Checked(true, out)
-}
-fun U256.toHex(): string {
-    val full = hexEncode(this.toBytes())
-    var start = 0
-    while (start < full.size - 1 && full[start] == 48) start = start + 1
-    "0x${full.slice(start, full.size)}"
-}
+fun u256FromHex(text: string): U256Checked = u256Checked(uint256FromHex(text))
 // 32 big-endian bytes, or fewer in, which pad on the left.
-fun u256FromBytes(value: string): U256Checked {
-    if (value.size > 32) return U256Checked(false, u256Zero())
-    val limbs: array<int> = [0, 0, 0, 0, 0, 0, 0, 0]
-    for (at in 0 until value.size) {
-        val byte = value[value.size - 1 - at]
-        limbs[at / 4] = limbs[at / 4] | (byte << ((at % 4) * 8))
-    }
-    U256Checked(true, U256(limbs))
-}
-fun U256.toBytes(): string {
-    val out: array<int> = []
-    var i = 7
-    while (i >= 0) {
-        val limb = this.w[i]
-        out.append((limb >> 24) & 255)
-        out.append((limb >> 16) & 255)
-        out.append((limb >> 8) & 255)
-        out.append(limb & 255)
-        i = i - 1
-    }
-    cryptoByteString(out)
-}
+fun u256FromBytes(value: string): U256Checked = u256Checked(uint256FromBytes(value))
 // a * b / 10^exponent, half up. Doesn't fit in 256 bits: not ok.
-fun u256MulDivPowerOfTen(a: U256, b: U256, exponent: int): U256Checked {
+fun u256MulDivPowerOfTen(a: uint256, b: uint256, exponent: int): U256Checked {
     val product = u256Multiplying(a, b)
     if (!product.ok) return U256Checked(false, u256Zero())
     val divisor = u256PowerOfTen(exponent)
     if (!divisor.ok) return U256Checked(true, u256Zero())
     val division = u256DivMod(product.value, divisor.value)
     val twice = u256ShiftLeft(division.remainder, 1)
-    if (division.remainder.bit(255) == 1 || !u256Less(twice, divisor.value)) return u256Add(division.quotient, u256FromInt(1))
+    if (division.remainder.bit(255) || !u256Less(twice, divisor.value)) return u256Add(division.quotient, u256FromInt(1))
     U256Checked(true, division.quotient)
 }
 // A smallest-unit amount as the human number, for display only: 1500000000000000000 at 18 is 1.5.
-fun u256FormatUnits(value: U256, decimals: int): string {
+fun u256FormatUnits(value: uint256, decimals: int): string {
     val digits = value.toDecimal()
     if (decimals == 0) return digits
     var whole = "0"

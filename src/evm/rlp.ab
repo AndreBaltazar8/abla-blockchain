@@ -74,7 +74,7 @@ fun rlpDecode(data: string): RlpDecoded {
     RlpDecoded(step.ok && step.next == data.size, step.item)
 }
 // `kind`: 0 legacy, 1 EIP-2930, 2 EIP-1559. chainId is 0 for a legacy one from before EIP-155. `to` is "" for one creating a contract.
-class EvmRawTransaction(val ok: bool, val kind: int, val hash: string, val chainId: int, val nonce: int, val to: string, val value: U256, val input: string)
+class EvmRawTransaction(val ok: bool, val kind: int, val hash: string, val chainId: int, val nonce: int, val to: string, val value: uint256, val input: string)
 private fun evmRawInt(item: RlpItem): int {
     var out = 0
     for (i in 0 until item.bytes.size) out = (out << 8) | item.bytes[i]
