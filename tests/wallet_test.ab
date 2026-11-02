@@ -1,0 +1,153 @@
+import "abla/test"
+import "abla/crypto"
+import "abla/json"
+import "abla/sys/linux"
+import "abla/text"
+import "../src/blockchain.ab"
+import "../src/wallet/entry.ab"
+
+// Official vectors where there are any: BIP-32, BIP-39, RFC 6979 and EIP-155's published signatures, RFC 8032, BIP-143. tools/sign_vectors.py's from other implementations otherwise: eth-keys, eth-account,
+// a plain Python Ed25519. Wycheproof's files have no private keys, so its role is the verifier these signatures must get past, which is tested against all of them in signature_test.
+fun bigOf(text: string): U256 = u256FromDecimal(text).value
+fun derOf(value: string): EcdsaSignature = ecdsaParseDer(value)
+fun main {
+    val v = jsonParse(linuxReadFile("tests/fixtures/wallet/vectors.json", 4194304), jsonPermissiveLimits).value
+    // BIP-39: every English vector, with the master key it gives.
+    for (t in v.get("bip39").values) {
+        val mnemonic = t.getString("mnemonic")
+        expectEqual(bip39FromEntropy(hexDecode(t.getString("entropy"))), mnemonic, "BIP-39 words")
+        expect(bip39Valid(mnemonic), "and valid")
+        val seed = bip39Seed(mnemonic, "TREZOR")
+        expectEqual(hexEncode(seed), t.getString("seed"), "BIP-39 seed")
+        val master = bip32PrivateFromSeed(seed, bip32MainnetPrivateVersion()).key
+        if (master != null) expectEqual(bip32PrivateSerialize(master), t.getString("xprv"), "its master key")
+    }
+    expect(!bip39Valid("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon"), "a bad checksum")
+    expect(!bip39Valid("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon notaword"), "a word off the list")
+    expect(!bip39Valid("abandon about"), "too short")
+    expect(bip39Generate(24).split(" ").size == 24, "a new one")
+    expect(bip39Valid(bip39Generate(12)), "and it's valid")
+    expectEqual(bip39Generate(13), "", "no such length")
+    // BIP-32: all four test vectors, down each chain from its master.
+    var chains = 0
+    for (t in v.get("bip32").values) {
+        val root = bip32PrivateFromSeed(hexDecode(t.getString("seed")), bip32MainnetPrivateVersion()).key
+        if (root != null) for (c in t.get("chains").values) {
+            val got = bip32PrivatePath(root, c.getString("path")).key
+            if (got != null) {
+                expectEqual(bip32PrivateSerialize(got), c.getString("xprv"), "BIP-32 xprv")
+                expectEqual(bip32Serialize(bip32Neuter(got)), c.getString("xpub"), "BIP-32 xpub")
+                val parsed = bip32PrivateParse(c.getString("xprv")).key
+                if (parsed != null) expectEqual(bip32PrivateSerialize(parsed), c.getString("xprv"), "parsed and written")
+                chains = chains + 1
+            } else expect(false, "derives")
+        }
+    }
+    expect(chains >= 14, "every chain")
+    expect(!bip32PrivateParse(v.get("bip32").values[0].get("chains").values[0].getString("xpub")).ok, "an xpub isn't a private key")
+    val aRoot = bip32PrivateFromSeed(hexDecode("000102030405060708090a0b0c0d0e0f"), bip32TestnetPrivateVersion()).key
+    if (aRoot != null) {
+        expect(!bip32PrivatePath(aRoot, "n/0").ok && !bip32PrivatePath(aRoot, "m/x").ok && !bip32PrivatePath(aRoot, "m/").ok, "bad paths")
+        // Public and private derivation meet: what a watcher derives is what the holder signs for.
+        val account = bip32PrivatePath(aRoot, "m/84'/1'/0'").key
+        val spend = bip32PrivatePath(aRoot, "m/84h/1h/0h/0/5").key
+        if (account != null && spend != null) {
+            val watched = bip32Path(bip32Neuter(account), [0, 5]).key
+            if (watched != null) expectEqual(hexEncode(watched.key), hexEncode(secpPublicKeyOf(spend.key)), "watching and holding agree")
+        }
+    }
+    // secp256k1: keys at the edges, RFC 6979's well-known answers, EIP-155's published signature, and eth-keys'.
+    expect(!secpSecretValid(hexDecode("0000000000000000000000000000000000000000000000000000000000000000")), "zero isn't a key")
+    expect(!secpSecretValid(hexDecode("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141")), "nor n")
+    expect(secpSecretValid(hexDecode("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364140")), "n - 1 is")
+    expectEqual(secpPublicKeyOf(hexDecode("00")), "", "a short key")
+    expectEqual(hexEncode(secpPublicKeyOf(hexDecode("0000000000000000000000000000000000000000000000000000000000000002"))), "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5", "2G")
+    expectEqual(hexEncode(secpPublicKeyOf(hexDecode("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364140"))), "0379be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798", "(n - 1)G")
+    val one = hexDecode("0000000000000000000000000000000000000000000000000000000000000001")
+    val satoshi = secpSign(one, sha256("Satoshi Nakamoto"))
+    expectEqual(hexEncode(satoshi.r), "934b1ea10a4b3c1757e2b0c017d0b6143ce3c9a7e6a4a49860d7a6ab210ee3d8", "RFC 6979 r")
+    expectEqual(hexEncode(satoshi.s), "2442ce9d2b916064108014783e923ec36b49743e2ffa1c4496f01a512aafd9e5", "RFC 6979 s")
+    val eip155 = secpSign(hexDecode("4646464646464646464646464646464646464646464646464646464646464646"), hexDecode("daf5a779ae972f972197303d7b574746c7ef83eadac0f2791ad23db92e4c8e53"))
+    expectEqual(u256FromBytes(eip155.r).value.toDecimal(), "18515461264373351373200002665853028612451056578545711640558177340181847433846", "EIP-155 r")
+    expectEqual(u256FromBytes(eip155.s).value.toDecimal(), "46948507304638947509940763649030358759909902576025900602547168820602576006531", "EIP-155 s")
+    expect(!eip155.yOdd, "EIP-155: v is 37")
+    expect(!secpSign(one, "short").ok, "a digest has 32 bytes")
+    for (t in v.get("ecdsa").values) {
+        val key = hexDecode(t.getString("key"))
+        val digest = hexDecode(t.getString("digest"))
+        val s = secpSign(key, digest)
+        expectEqual(hexEncode(s.r), t.getString("r"), "r as eth-keys has it")
+        expectEqual(hexEncode(s.s), t.getString("s"), "s")
+        expect(s.yOdd == t.get("odd").asBoolean(), "the parity")
+        expectEqual(hexEncode(secpPublicKeyOf(key)), t.getString("public"), "the public key")
+        expect(ecdsaVerify(digest, derOf(secpSignatureDer(s)), secpPublicKeyOf(key)), "through DER, it passes the verifier that Wycheproof tests")
+    }
+    // RFC 8032's first three and its SHA(abc), and a plain Python implementation's.
+    val rfc = [
+        ["9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60", "", "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"],
+        ["4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb", "72", "92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00"],
+        ["c5aa8df43f9f837bedb7442f31dcb7b166d38535076f094b85ce3a2e0b4458f7", "af82", "6291d657deec24024827e69c3abe01a30ce548a284743a445e3680d7db5ac3ac18ff9b538d16f290ae67f760984dc6594a7c15e9716ed28dc027beceea1ec40a"]
+    ]
+    for (i in 0 until 3) expectEqual(hexEncode(ed25519Sign(hexDecode(rfc[i][0]), hexDecode(rfc[i][1]))), rfc[i][2], "RFC 8032")
+    for (t in v.get("ed25519").values) {
+        val seed = hexDecode(t.getString("seed"))
+        val message = hexDecode(t.getString("message"))
+        expectEqual(hexEncode(ed25519PublicKeyOf(seed)), t.getString("public"), "an Ed25519 key")
+        val s = ed25519Sign(seed, message)
+        expectEqual(hexEncode(s), t.getString("signature"), "an Ed25519 signature")
+        expect(ed25519Verify(ed25519PublicKeyOf(seed), message, s), "passes the verifier that Wycheproof tests")
+    }
+    expectEqual(ed25519Sign("short", ""), "", "a seed has 32 bytes")
+    // BIP-143's native P2WPKH example: the digest and the signature of its second input, and building a transaction around it.
+    val fff = "9f96ade4b41d5433f4eda31e1738ec2b36f6e7d1420d94a6af99801a88f7f7ff"
+    val eff = "8ac60eb9575db5b2d987e29f301b5b819ea83a5c6579d282d189cc04b8e151ef"
+    val coins = [BitcoinCoin(fff, 0, 625000000, "", 4294967278), BitcoinCoin(eff, 1, 600000000, hexDecode("619c335025c7f4012e556c2a58b2506e30b8511b53ade95ea316fd8c3286feb9"), 4294967295)]
+    val outputs = hexDecode("202cb206000000001976a9148280b37df378db99f66f85c95a783a76ac7a6d5988ac9093510d000000001976a9143bde42dbee7e4dbe6a21b2d50ce2f0167faa815988ac")
+    val digest = bitcoinSegwitDigest(1, coins, outputs, 17, 1, hexDecode("1d0f172a0ecb48aee1be1f2687d2963ae33f71a1"))
+    expectEqual(hexEncode(digest), "c37af31116d1b27caf68aae9e3ac82f1477929014d5b917657d0eb49478cb670", "BIP-143 sigHash")
+    expectEqual(hexEncode(secpSignatureDer(secpSign(coins[1].secret, digest))), "304402203609e17b84f6a7d30c80bfa610b5b4542f32a8a0d5447a12fb1366d7f01cc44a0220573a954c4518331561406f90300e8f3358f51928d43c212a8caed02de67eebee", "BIP-143 signature")
+    // A whole transaction, read back by this library's own parser, with its signature checked.
+    val network = bitcoinTestnet()
+    val secret = hexDecode("619c335025c7f4012e556c2a58b2506e30b8511b53ade95ea316fd8c3286feb9")
+    val key = secpPublicKeyOf(secret)
+    val mine = bitcoinAddress(network, "wpkh", key)
+    val spent = [BitcoinCoin(eff, 1, 100000, secret, 4294967293)]
+    val tx = bitcoinSign(network, 2, spent, [BitcoinPayment(mine, 60000), BitcoinPayment("mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn", 39000)], 0)
+    expect(tx.ok, "signed")
+    val parsed = bitcoinParseTransaction(hexDecode(tx.raw))
+    expect(parsed.ok && parsed.segwit, "reads back")
+    expectEqual(parsed.txid, tx.txid, "the txid")
+    expect(parsed.outputs[0].value == 60000 && parsed.outputs[1].value == 39000, "the amounts")
+    expectEqual(hexEncode(parsed.outputs[0].scriptPubKey), "0014${hexEncode(hash160(key))}", "P2WPKH")
+    val witness = parsed.inputs[0].witness
+    expectEqual(hexEncode(witness[1]), hexEncode(key), "the key in the witness")
+    val out = bitcoinOutputBytes(60000, hexDecode("0014${hexEncode(hash160(key))}")) + bitcoinOutputBytes(39000, parsed.outputs[1].scriptPubKey)
+    val check = bitcoinSegwitDigest(2, spent, out, 0, 0, hash160(key))
+    expect(ecdsaVerify(check, derOf(witness[0].slice(0, witness[0].size - 1)), key), "and its signature holds")
+    expect(!bitcoinSign(network, 2, spent, [BitcoinPayment("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4", 1)], 0).ok, "a mainnet address on testnet")
+    // EIP-1559: byte for byte as eth-account signs them.
+    for (t in v.get("evm").values) {
+        val secretKey = hexDecode(t.getString("key"))
+        expectEqual(evmAddressOfSecret(secretKey), t.getString("address"), "the address")
+        val data = t.getString("data").slice(2, t.getString("data").size)
+        val signed = evmSign1559(EvmUnsigned(t.getInt("chain"), t.getInt("nonce"), bigOf(t.getString("tip")), bigOf(t.getString("maxFee")), t.getInt("gas"), t.getString("to"), bigOf(t.getString("value")), hexDecode(data)), secretKey)
+        expectEqual(signed.raw, t.getString("raw"), "EIP-1559 bytes")
+        expectEqual(signed.hash, t.getString("hash"), "and hash")
+        val back = evmParseTransaction(hexDecode(signed.raw.slice(2, signed.raw.size)))
+        expect(back.ok && back.kind == 2 && back.chainId == 11155111, "reads back")
+    }
+    expectEqual(hexEncode(erc20TransferData("0x3535353535353535353535353535353535353535", u256FromInt(7))), "a9059cbb00000000000000000000000035353535353535353535353535353535353535350000000000000000000000000000000000000000000000000000000000000007", "transfer's data")
+    // Stellar: byte for byte as the Python tool builds and signs, and read back.
+    for (t in v.get("stellar").values) {
+        val ops: array<StellarOperation> = []
+        for (o in t.get("operations").values) ops.append(StellarOperation(o.getString("kind"), o.getString("destination"), o.getString("asset"), o.getInt("amount")))
+        val signed = stellarSign(hexDecode(t.getString("seed")), stellarTestnetPassphrase(), t.getInt("sequence"), 100, t.getString("memo"), ops)
+        expectEqual(signed.envelope, t.getString("envelope"), "the envelope")
+        expectEqual(signed.hash, t.getString("hash"), "the hash")
+        val read = stellarParseEnvelope(base64Decode(signed.envelope), stellarTestnetPassphrase())
+        expect(read.ok, "reads back")
+        expectEqual(read.source, stellarAddressOfSeed(hexDecode(t.getString("seed"))), "whose")
+    }
+    expect(!stellarSign("short", stellarTestnetPassphrase(), 1, 100, "", []).ok, "a seed has 32 bytes")
+    testsPassed()
+}

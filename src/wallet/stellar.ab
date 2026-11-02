@@ -1,0 +1,73 @@
+import "abla/crypto"
+import "abla/text"
+import "../stellar/strkey.ab"
+import "../stellar/xdr.ab"
+import "ed25519.ab"
+
+// Stellar's transactions: building a V1 envelope and signing it. Operations are xdr.ab's StellarOperation: payment, create_account, change_trust.
+// `memo` is text, up to 28 bytes, or "" for none. `envelope` is what Horizon's POST /transactions takes, in Base64; `hash`, what it lists it by, in hex.
+class StellarSigned(val ok: bool, val reason: string, val envelope: string, val hash: string)
+private fun u32Be(value: int): string = cryptoByteString([(value >> 24) & 255, (value >> 16) & 255, (value >> 8) & 255, value & 255])
+private fun i64Be(value: int): string = u32Be((value >> 32) & 4294967295) + u32Be(value & 4294967295)
+private fun accountBytes(account: string): string {
+    val decoded = strkeyDecode(account)
+    if (decoded.ok && decoded.version == 48 && decoded.payload.size == 32) decoded.payload else ""
+}
+private fun padded(value: string): string {
+    var out = value
+    while (out.size % 4 != 0) out = out + cryptoByteString([0])
+    out
+}
+private fun assetBytes(asset: string): string {
+    if (asset == "native") return u32Be(0)
+    val parts = asset.split(":")
+    if (parts.size != 2 || parts[0].size == 0 || parts[0].size > 12) return ""
+    val issuer = accountBytes(parts[1])
+    if (issuer == "") return ""
+    var name = parts[0]
+    val width = if (name.size <= 4) 4 else 12
+    while (name.size < width) name = name + cryptoByteString([0])
+    u32Be(if (width == 4) 1 else 2) + name + u32Be(0) + issuer
+}
+private fun operationBytes(op: StellarOperation): string {
+    // No source account of its own: the transaction's.
+    val none = u32Be(0)
+    if (op.kind == "payment") {
+        val to = accountBytes(op.destination)
+        val asset = assetBytes(op.asset)
+        if (to == "" || asset == "") return ""
+        return none + u32Be(1) + u32Be(0) + to + asset + i64Be(op.amount)
+    }
+    if (op.kind == "create_account") {
+        val to = accountBytes(op.destination)
+        if (to == "") return ""
+        return none + u32Be(0) + u32Be(0) + to + i64Be(op.amount)
+    }
+    if (op.kind == "change_trust") {
+        val asset = assetBytes(op.asset)
+        if (asset == "" || op.asset == "native") return ""
+        return none + u32Be(6) + asset + i64Be(op.amount)
+    }
+    ""
+}
+fun stellarAddressOfSeed(seed: string): string {
+    val key = ed25519PublicKeyOf(seed)
+    if (key == "") "" else strkeyEncode(48, key)
+}
+// `sequence` is the account's current one plus one, `feeEach` per operation in stroops.
+fun stellarSign(seed: string, passphrase: string, sequence: int, feeEach: int, memo: string, operations: array<StellarOperation>): StellarSigned {
+    val key = ed25519PublicKeyOf(seed)
+    if (key == "") return StellarSigned(false, "bad_key", "", "")
+    if (memo.size > 28) return StellarSigned(false, "bad_memo", "", "")
+    var ops = ""
+    for (op in operations) {
+        val bytes = operationBytes(op)
+        if (bytes == "") return StellarSigned(false, "bad_operation", "", "")
+        ops = ops + bytes
+    }
+    val memoBytes = if (memo == "") u32Be(0) else u32Be(1) + u32Be(memo.size) + padded(memo)
+    val tx = u32Be(0) + key + u32Be(feeEach * operations.size) + i64Be(sequence) + u32Be(0) + memoBytes + u32Be(operations.size) + ops + u32Be(0)
+    val digest = sha256(sha256(passphrase) + u32Be(2) + tx)
+    val envelope = u32Be(2) + tx + u32Be(1) + key.slice(28, 32) + u32Be(64) + ed25519Sign(seed, digest)
+    StellarSigned(true, "", base64Encode(envelope), hexEncode(digest))
+}

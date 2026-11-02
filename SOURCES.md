@@ -27,3 +27,10 @@ Where each test's expected values come from.
 Fixtures in `tests/fixtures` are real public answers, captured on 2026-11-01: a mined signet transaction from mempool.space, a Sepolia block (pruned to the transactions that matter) with a USDC transfer and an ether payment from publicnode, and Stellar testnet payments from Horizon.
 
 `tests/wycheproof` is copied unchanged from [C2SP/wycheproof](https://github.com/C2SP/wycheproof) at commit d17cc89fa5c8f4f4d378b5385ebf75da5d0926c9, `testvectors_v1`, under the Apache License 2.0 of that project. Those test data keep that licence.
+| BIP-39 | The list from bitcoin/bips; trezor/python-mnemonic's `vectors.json`, English | `wallet_test` |
+| BIP-32, private | BIP-32's four test vectors, every chain | `wallet_test` |
+| RFC 6979 on secp256k1 | The well-known "Satoshi Nakamoto" answer; EIP-155's example; 40 from eth-keys by `tools/sign_vectors.py` | `wallet_test` |
+| Ed25519 signing | RFC 8032 tests 1 to 3; 10 from a plain Python RFC 8032 | `wallet_test` |
+| BIP-143 | Its native P2WPKH example: digest and signature | `wallet_test` |
+| EIP-1559 | 4 from eth-account, byte for byte | `wallet_test` |
+| Stellar envelopes | 3 from a separate Python builder, byte for byte; this library's parser | `wallet_test` |

@@ -1,0 +1,141 @@
+import "abla/ct"
+import "abla/crypto"
+import "abla/crypto/bignum"
+import "field.ab"
+
+// Signing with Ed25519, RFC 8032, deterministic by its own design. Each multiplication is 256 doublings and additions by the complete formula on extended
+// coordinates (Hisil et al., add-2008-hwcd-3), with the result selected by mask. The seed's hash and the nonce stay in secret types until the signature.
+
+private val ED_P = "7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffed"
+private val ED_L = "1000000000000000000000000000000014def9dea2f79cd65812631a5cf5d3ed"
+private val ED_P_MINUS_2 = "7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeb"
+private val ED_GX = "216936d3cd6e53fec0a4e231fdd6dc5c692cc7609525a7b2c9562d608f25d51a"
+private val ED_GY = "6666666666666666666666666666666666666666666666666666666666666658"
+private val ED_2D = "2406d9dc56dffce7198e80f2eef3d13000e0149a8283b156ebd69b9426b2f159"
+private val edField: BnModulus = walletModulus(ED_P)
+private val edScalars: BnModulus = walletModulus(ED_L)
+
+// out, p, q: X, Y, Z, T at 0, 32, 64, 96. For a = -1, complete, and it doubles too.
+private trusted fun edAddPoints(out: int, p: int, q: int, k: int, work: int): void {
+    val f = edField
+    val a = work
+    val b = work + 32
+    val c = work + 64
+    val d = work + 96
+    val e = work + 128
+    val h = work + 160
+    walletSub(f, a, p + 32, p)
+    walletSub(f, e, q + 32, q)
+    bnMultiply(f, a, a, e)
+    walletAdd(f, b, p + 32, p)
+    walletAdd(f, e, q + 32, q)
+    bnMultiply(f, b, b, e)
+    bnMultiply(f, c, p + 96, q + 96)
+    bnMultiply(f, c, c, k)
+    bnMultiply(f, d, p + 64, q + 64)
+    walletAdd(f, d, d, d)
+    walletSub(f, e, b, a)
+    walletAdd(f, h, b, a)
+    walletSub(f, a, d, c)
+    walletAdd(f, b, d, c)
+    bnMultiply(f, out, e, a)
+    bnMultiply(f, out + 32, b, h)
+    bnMultiply(f, out + 96, e, h)
+    bnMultiply(f, out + 64, a, b)
+}
+// The 32-byte encoding of `scalar` (limbs) times the base point.
+private trusted fun edBaseEncoded(scalar: int): string {
+    val f = edField
+    val total = 4 + 4 + 4 + 1 + 6 + 3
+    val memory = bnAllocate(total * WALLET_WORDS)
+    val r = memory
+    val q = memory + 128
+    val g = memory + 256
+    val k = memory + 384
+    val work = memory + 416
+    val inverse = memory + 608
+    val plain = memory + 640
+    val y = memory + 672
+    walletLoadString(g, walletBytesOf(ED_GX), 0, 32, true)
+    bnEncode(f, g, g)
+    walletLoadString(g + 32, walletBytesOf(ED_GY), 0, 32, true)
+    bnEncode(f, g + 32, g + 32)
+    bnCopy(g + 64, f.one(), WALLET_WORDS)
+    bnMultiply(f, g + 96, g, g + 32)
+    walletLoadString(k, walletBytesOf(ED_2D), 0, 32, true)
+    bnEncode(f, k, k)
+    // The neutral point: 0, 1, 1, 0.
+    bnCopy(r + 32, f.one(), WALLET_WORDS)
+    bnCopy(r + 64, f.one(), WALLET_WORDS)
+    var bit = 255
+    while (bit >= 0) {
+        edAddPoints(r, r, r, k, work)
+        edAddPoints(q, r, g, k, work)
+        walletSelect(r, q, r, walletBitMask(scalar, bit), WALLET_WORDS * 4)
+        bit = bit - 1
+    }
+    bnDecode(f, plain, r + 64)
+    walletInverse(f, inverse, plain, walletBytesOf(ED_P_MINUS_2))
+    bnMultiply(f, plain, r, inverse)
+    bnDecode(f, plain, plain)
+    bnMultiply(f, y, r + 32, inverse)
+    bnDecode(f, y, y)
+    // A point's encoding is public wherever it's used.
+    val out = walletStoreBytes(y, false)
+    out[31] = out[31] | ((walletStoreBytes(plain, false)[0] & 1) << 7)
+    bnRelease(memory, total * WALLET_WORDS)
+    walletWipeScratch(f)
+    cryptoByteString(out)
+}
+private trusted fun edLoadClamped(to: int, digest: string): void {
+    walletLoadString(to, digest, 0, 32, false)
+    // Clearing and setting bits at public places, in the secret.
+    bnStore(to, bnLoad(to) & secretU32(u32(4294967288)))
+    bnStore(to + 28, (bnLoad(to + 28) & secretU32(u32(2147483647))) | secretU32(u32(1073741824)))
+}
+trusted fun ed25519PublicKeyOf(seed: string): string {
+    if (seed.size != 32) return ""
+    val scalar = bnAllocate(WALLET_WORDS)
+    edLoadClamped(scalar, sha512(seed))
+    val out = edBaseEncoded(scalar)
+    bnRelease(scalar, WALLET_WORDS)
+    out
+}
+private trusted fun edWideScalar(out: int, wide: string): void {
+    val low = bnAllocate(WALLET_WORDS)
+    val high = bnAllocate(WALLET_WORDS)
+    walletLoadString(low, wide, 0, 32, false)
+    walletLoadString(high, wide, 32, 32, false)
+    walletReduceWide(edScalars, out, low, high)
+    bnRelease(low, WALLET_WORDS)
+    bnRelease(high, WALLET_WORDS)
+}
+// 64 bytes, or "" for a seed that isn't 32.
+trusted fun ed25519Sign(seed: string, message: string): string {
+    if (seed.size != 32) return ""
+    val digest = sha512(seed)
+    val total = 5
+    val memory = bnAllocate(total * WALLET_WORDS)
+    val a = memory
+    val r = memory + 32
+    val k = memory + 64
+    val s = memory + 96
+    val b = memory + 128
+    edLoadClamped(a, digest)
+    val key = edBaseEncoded(a)
+    edWideScalar(r, sha512(digest.slice(32, 64) + message))
+    val point = edBaseEncoded(r)
+    edWideScalar(k, sha512(point + key + message))
+    val f = edScalars
+    // a is below 2^255, which is past L: encoding reduces it, as the multiplication's bound allows.
+    bnEncode(f, b, a)
+    bnEncode(f, k, k)
+    bnMultiply(f, s, b, k)
+    bnEncode(f, r, r)
+    walletAdd(f, s, s, r)
+    bnDecode(f, s, s)
+    val out = point + cryptoByteString(walletStoreBytes(s, false))
+    bnRelease(memory, total * WALLET_WORDS)
+    walletWipeScratch(f)
+    out
+}

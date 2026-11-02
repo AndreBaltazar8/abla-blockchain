@@ -1,0 +1,81 @@
+import "abla/crypto"
+import "abla/text"
+import "../bitcoin/bip32.ab"
+import "../curve/secp256k1.ab"
+import "../encoding/base58.ab"
+import "../hash/ripemd160.ab"
+import "secp256k1.ab"
+
+// BIP32 for extended private keys. The chain code and key are in strings, and go through HMAC-SHA512, which has no branch or table from its data, and into abla/ct for the arithmetic.
+// Writing one out as Base58 isn't constant time: that's for a backup, not for every signature.
+
+class ExtendedPrivateKey(val version: int, val depth: int, val fingerprint: string, val childNumber: int, val chainCode: string, val key: string)
+class ExtendedPrivateResult(val ok: bool, val key: ExtendedPrivateKey?)
+
+fun bip32MainnetPrivateVersion(): int = 76066276
+fun bip32TestnetPrivateVersion(): int = 70615956
+private fun bip32Be32(value: int): string = cryptoByteString([(value >> 24) & 255, (value >> 16) & 255, (value >> 8) & 255, value & 255])
+fun bip32PrivateFromSeed(seed: string, version: int): ExtendedPrivateResult {
+    val digest = hmacSha512("Bitcoin seed", seed)
+    val key = digest.slice(0, 32)
+    if (!secpSecretValid(key)) return ExtendedPrivateResult(false, null)
+    ExtendedPrivateResult(true, ExtendedPrivateKey(version, 0, cryptoByteString([0, 0, 0, 0]), 0, digest.slice(32, 64), key))
+}
+// CKDpriv. A hardened index is 2^31 or over. Not ok in the one in 2^127 where the result isn't valid: BIP32 says to go on to the next index.
+fun bip32PrivateChild(parent: ExtendedPrivateKey, index: int): ExtendedPrivateResult {
+    if (index < 0 || index >= 4294967296) return ExtendedPrivateResult(false, null)
+    val publicKey = secpPublicKeyOf(parent.key)
+    val data = if (index >= 2147483648) cryptoByteString([0]) + parent.key else publicKey
+    val digest = hmacSha512(parent.chainCode, data + bip32Be32(index))
+    val left = digest.slice(0, 32)
+    if (!secpSecretValid(left)) return ExtendedPrivateResult(false, null)
+    val key = secpScalarAdd(left, parent.key)
+    if (key == "") return ExtendedPrivateResult(false, null)
+    ExtendedPrivateResult(true, ExtendedPrivateKey(parent.version, parent.depth + 1, hash160(publicKey).slice(0, 4), index, digest.slice(32, 64), key))
+}
+// "m/84'/1'/0'/0/5", with ' or h for a hardened step.
+fun bip32PrivatePath(root: ExtendedPrivateKey, path: string): ExtendedPrivateResult {
+    var at = root
+    val steps = path.split("/")
+    if (steps.size == 0 || steps[0] != "m") return ExtendedPrivateResult(false, null)
+    for (i in 1 until steps.size) {
+        val step = steps[i]
+        var end = step.size
+        var offset = 0
+        if (end > 0 && (step[end - 1] == 39 || step[end - 1] == 104)) {
+            offset = 2147483648
+            end = end - 1
+        }
+        if (end == 0 || end > 10) return ExtendedPrivateResult(false, null)
+        var number = 0
+        for (c in 0 until end) {
+            if (step[c] < 48 || step[c] > 57) return ExtendedPrivateResult(false, null)
+            number = number * 10 + step[c] - 48
+        }
+        if (number >= 2147483648) return ExtendedPrivateResult(false, null)
+        val next = bip32PrivateChild(at, number + offset)
+        val key = next.key
+        if (key == null) return ExtendedPrivateResult(false, null)
+        at = key
+    }
+    ExtendedPrivateResult(true, at)
+}
+// What a watcher may have: the public side.
+fun bip32Neuter(k: ExtendedPrivateKey): ExtendedPublicKey {
+    val versions = bip32PrivateVersions()
+    var version = 0
+    for (i in 0 until versions.size) if (versions[i] == k.version) version = bip32PublicVersions()[i]
+    ExtendedPublicKey(version, k.depth, k.fingerprint, k.childNumber, k.chainCode, secpPublicKeyOf(k.key))
+}
+fun bip32PrivateSerialize(k: ExtendedPrivateKey): string = base58CheckEncode("${bip32Be32(k.version)}${cryptoByteString([k.depth])}${k.fingerprint}${bip32Be32(k.childNumber)}${k.chainCode}${cryptoByteString([0])}${k.key}")
+fun bip32PrivateParse(text: string): ExtendedPrivateResult {
+    val decoded = base58CheckDecode(text)
+    if (!decoded.ok || decoded.value.size != 78) return ExtendedPrivateResult(false, null)
+    val raw = decoded.value
+    val version = (int(raw[0]) << 24) | (int(raw[1]) << 16) | (int(raw[2]) << 8) | int(raw[3])
+    var known = false
+    for (v in bip32PrivateVersions()) if (v == version) known = true
+    val key = raw.slice(46, 78)
+    if (!known || raw[45] != 0 || !secpSecretValid(key)) return ExtendedPrivateResult(false, null)
+    ExtendedPrivateResult(true, ExtendedPrivateKey(version, int(raw[4]), raw.slice(5, 9), (int(raw[9]) << 24) | (int(raw[10]) << 16) | (int(raw[11]) << 8) | int(raw[12]), raw.slice(13, 45), key))
+}

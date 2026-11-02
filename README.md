@@ -2,7 +2,9 @@
 
 Blockchain algorithms and formats for [Abla](https://github.com/AndreBaltazar8/ablac): hashes, curves, signature checks, address formats, key derivation, transaction and block formats, and clients that read chains. Mozilla Public License 2.0.
 
-It reads public data only. **Nothing here signs, spends or holds a private key**: signatures are only checked, and BIP32 derivation is public only.
+What you get by importing the library, or any subpath outside `wallet`, reads public data only: **it can't sign, spend or hold a private key**. Signatures are only checked, and BIP32 derivation is public only.
+
+[`abla-blockchain/wallet`](docs/signing.md) is the part that signs, asked for by name: BIP-39, private BIP-32, ECDSA with RFC 6979, Ed25519, and building and signing Bitcoin, EVM and Stellar transactions. Read what it says about timing before giving it a key that matters.
 
 ```abla
 import github("AndreBaltazar8/abla-blockchain")
@@ -46,6 +48,7 @@ All of a package's subpaths are one locked revision, so a program can use severa
 | `bitcoin`, `bitcoin/address`, `bitcoin/bip32`, `bitcoin/descriptor`, `bitcoin/esplora`, `bitcoin/raw` |
 | `evm`, `evm/address`, `evm/erc20`, `evm/rlp`, `evm/rpc` |
 | `stellar`, `stellar/horizon`, `stellar/strkey`, `stellar/xdr` |
+| `wallet`, `wallet/secp256k1`, `wallet/ed25519`, `wallet/bip39`, `wallet/bip32`, `wallet/bitcoin`, `wallet/evm`, `wallet/stellar`, `wallet/field`, `wallet/bip39_english` |
 
 ## What's in it
 

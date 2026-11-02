@@ -1,0 +1,87 @@
+import "abla/crypto"
+import "../bitcoin/address.ab"
+import "../bitcoin/raw.ab"
+import "../encoding/base58.ab"
+import "../encoding/bech32.ab"
+import "../hash/ripemd160.ab"
+import "secp256k1.ab"
+
+// Spending from P2WPKH: building a segwit transaction and signing it by BIP-143. An input is what's being spent and its key; an output, an address and an amount.
+class BitcoinCoin(val txid: string, val index: int, val value: int, val secret: string, val sequence: int)
+class BitcoinPayment(val address: string, val value: int)
+// `ok` false with `reason`: bad_key, bad_address, bad_coin. `txid` as Bitcoin shows it, `raw` ready to broadcast.
+class BitcoinSigned(val ok: bool, val reason: string, val txid: string, val raw: string)
+private fun signedFailed(reason: string): BitcoinSigned = BitcoinSigned(false, reason, "", "")
+private fun leBytes(value: int, count: int): string {
+    val out: array<int> = []
+    for (i in 0 until count) out.append((value >> (i * 8)) & 255)
+    cryptoByteString(out)
+}
+private fun varint(value: int): string {
+    if (value < 253) return leBytes(value, 1)
+    if (value < 65536) return cryptoByteString([253]) + leBytes(value, 2)
+    cryptoByteString([254]) + leBytes(value, 4)
+}
+private fun withLength(value: string): string = varint(value.size) + value
+private fun reversed(value: string): string {
+    val out: array<int> = []
+    var i = value.size - 1
+    while (i >= 0) {
+        out.append(int(value[i]))
+        i = i - 1
+    }
+    cryptoByteString(out)
+}
+// The script an address is paid by: P2WPKH, P2WSH, P2TR, P2PKH or P2SH. "" for one that isn't this network's.
+fun bitcoinScriptOf(network: BitcoinNetwork, address: string): string {
+    val segwit = segwitDecode(address)
+    if (segwit.ok) {
+        if (segwit.hrp != network.hrp) return ""
+        val op = if (segwit.version == 0) 0 else 80 + segwit.version
+        return cryptoByteString([op, segwit.program.size]) + segwit.program
+    }
+    val decoded = base58CheckDecode(address)
+    if (!decoded.ok || decoded.value.size != 21) return ""
+    val hash = decoded.value.slice(1, 21)
+    if (int(decoded.value[0]) == network.p2pkhVersion) return cryptoByteString([118, 169, 20]) + hash + cryptoByteString([136, 172])
+    if (int(decoded.value[0]) == network.p2shVersion) return cryptoByteString([169, 20]) + hash + cryptoByteString([135])
+    ""
+}
+// BIP-143's digest for one P2WPKH input with SIGHASH_ALL, of already built parts.
+fun bitcoinSegwitDigest(version: int, coins: array<BitcoinCoin>, outputs: string, lockTime: int, at: int, keyHash: string): string {
+    var prevouts = ""
+    var sequences = ""
+    for (c in coins) {
+        prevouts = prevouts + reversed(hexDecode(c.txid)) + leBytes(c.index, 4)
+        sequences = sequences + leBytes(c.sequence, 4)
+    }
+    val coin = coins[at]
+    val code = cryptoByteString([25, 118, 169, 20]) + keyHash + cryptoByteString([136, 172])
+    bitcoinDoubleSha256(leBytes(version, 4) + bitcoinDoubleSha256(prevouts) + bitcoinDoubleSha256(sequences) + reversed(hexDecode(coin.txid)) + leBytes(coin.index, 4) + code + leBytes(coin.value, 8) + leBytes(coin.sequence, 4) + bitcoinDoubleSha256(outputs) + leBytes(lockTime, 4) + leBytes(1, 4))
+}
+fun bitcoinOutputBytes(value: int, script: string): string = leBytes(value, 8) + withLength(script)
+fun bitcoinSign(network: BitcoinNetwork, version: int, coins: array<BitcoinCoin>, payments: array<BitcoinPayment>, lockTime: int): BitcoinSigned {
+    if (coins.size == 0 || payments.size == 0) return signedFailed("bad_coin")
+    var outputs = ""
+    for (p in payments) {
+        val script = bitcoinScriptOf(network, p.address)
+        if (script == "" || p.value < 0) return signedFailed("bad_address")
+        outputs = outputs + bitcoinOutputBytes(p.value, script)
+    }
+    var inputs = ""
+    var witnesses = ""
+    for (i in 0 until coins.size) {
+        val coin = coins[i]
+        if (hexDecode(coin.txid).size != 32) return signedFailed("bad_coin")
+        val key = secpPublicKeyOf(coin.secret)
+        if (key == "") return signedFailed("bad_key")
+        val signed = secpSign(coin.secret, bitcoinSegwitDigest(version, coins, outputs, lockTime, i, hash160(key)))
+        if (!signed.ok) return signedFailed("bad_key")
+        inputs = inputs + reversed(hexDecode(coin.txid)) + leBytes(coin.index, 4) + cryptoByteString([0]) + leBytes(coin.sequence, 4)
+        witnesses = witnesses + cryptoByteString([2]) + withLength(secpSignatureDer(signed) + cryptoByteString([1])) + withLength(key)
+    }
+    val body = varint(coins.size) + inputs + varint(payments.size) + outputs
+    val head = leBytes(version, 4)
+    val tail = leBytes(lockTime, 4)
+    BitcoinSigned(true, "", bitcoinReversedHex(bitcoinDoubleSha256(head + body + tail)), hexEncode(head + cryptoByteString([0, 1]) + body + witnesses + tail))
+}

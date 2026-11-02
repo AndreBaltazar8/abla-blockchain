@@ -1,0 +1,41 @@
+import "abla/crypto"
+import "../evm/address.ab"
+import "../evm/rlp.ab"
+import "../hash/keccak.ab"
+import "../uint256/u256.ab"
+import "secp256k1.ab"
+
+// Ethereum's transactions, EIP-1559: building and signing. `to` is "" to create a contract, and `data` is bytes. All in the units the chain has.
+class EvmUnsigned(val chainId: int, val nonce: int, val maxPriorityFee: U256, val maxFee: U256, val gas: int, val to: string, val value: U256, val data: string)
+// `raw` and `hash` are 0x hex. Not ok for a bad key or address.
+class EvmSigned(val ok: bool, val raw: string, val hash: string)
+private fun minimal(value: string): string {
+    var start = 0
+    while (start < value.size && value[start] == 0) start = start + 1
+    value.slice(start, value.size)
+}
+private fun rlpU256(value: U256): RlpItem = rlpBytes(minimal(value.toBytes()))
+private fun rlpInt(value: int): RlpItem = rlpU256(u256FromInt(value))
+// The address that goes with a secret.
+fun evmAddressOfSecret(secret: string): string {
+    val key = secpPublicKeyOf(secret)
+    if (key == "") "" else evmAddressOfKey(key)
+}
+// What's in `data` to move an ERC-20. `to` is 0x hex, `amount` in the token's own units.
+fun erc20TransferData(to: string, amount: U256): string {
+    val address = hexDecode(evmLower(to).slice(2, 42))
+    cryptoByteString([169, 5, 156, 187]) + u256FromBytes(address).value.toBytes() + amount.toBytes()
+}
+fun evmSign1559(t: EvmUnsigned, secret: string): EvmSigned {
+    val toBytes = if (t.to == "") "" else hexDecode(evmLower(t.to).slice(2, 42))
+    if (t.to != "" && toBytes.size != 20) return EvmSigned(false, "", "")
+    val fields = [rlpInt(t.chainId), rlpInt(t.nonce), rlpU256(t.maxPriorityFee), rlpU256(t.maxFee), rlpInt(t.gas), rlpBytes(toBytes), rlpU256(t.value), rlpBytes(t.data), rlpList([])]
+    val kind = cryptoByteString([2])
+    val signed = secpSign(secret, keccak256(kind + rlpEncode(rlpList(fields))))
+    if (!signed.ok) return EvmSigned(false, "", "")
+    fields.append(rlpInt(if (signed.yOdd) 1 else 0))
+    fields.append(rlpBytes(minimal(signed.r)))
+    fields.append(rlpBytes(minimal(signed.s)))
+    val raw = kind + rlpEncode(rlpList(fields))
+    EvmSigned(true, "0x${hexEncode(raw)}", "0x${hexEncode(keccak256(raw))}")
+}

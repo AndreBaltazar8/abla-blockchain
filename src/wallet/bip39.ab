@@ -1,0 +1,65 @@
+import "abla/crypto"
+import "abla/random"
+import "abla/text"
+import "bip39_english.ab"
+
+// Seeds from word lists, BIP-39, in English. A mnemonic is a secret in plain text: making one and checking one look words up by their value, so unlike signing they aren't
+// constant time (docs/signing.md). Do it where nobody's watching, once.
+
+private fun bip39Words(): array<string> = bip39EnglishText().split(" ")
+private fun bip39Bit(data: string, at: int): int = (int(data[at / 8]) >> (7 - at % 8)) & 1
+// 16, 20, 24, 28 or 32 bytes to 12 to 24 words. "" for another size.
+fun bip39FromEntropy(entropy: string): string {
+    val size = entropy.size
+    if (size < 16 || size > 32 || size % 4 != 0) return ""
+    val data = entropy + sha256(entropy)
+    val words = bip39Words()
+    var out = ""
+    val total = (size * 8 + size / 4) / 11
+    for (w in 0 until total) {
+        var index = 0
+        for (b in 0 until 11) index = (index << 1) | bip39Bit(data, w * 11 + b)
+        out = if (w == 0) words[index] else "$out ${words[index]}"
+    }
+    out
+}
+// A new one, from the system's secure random source: 12 to 24 words, a multiple of 3. "" if it can't be had.
+fun bip39Generate(wordCount: int): string {
+    if (wordCount < 12 || wordCount > 24 || wordCount % 3 != 0) return ""
+    val made = secureRandomBytes(wordCount * 4 / 3)
+    if (!made.succeeded) return ""
+    bip39FromEntropy(made.bytes)
+}
+// Whether the words are all on the list, and its checksum holds.
+fun bip39Valid(mnemonic: string): bool {
+    val given = mnemonic.split(" ")
+    if (given.size < 12 || given.size > 24 || given.size % 3 != 0) return false
+    val words = bip39Words()
+    val bytes: array<int> = []
+    for (i in 0 until given.size * 11 / 8 + 1) bytes.append(0)
+    var at = 0
+    for (word in given) {
+        var index = -1
+        for (i in 0 until words.size) if (words[i] == word) index = i
+        if (index < 0) return false
+        var b = 10
+        while (b >= 0) {
+            bytes[at / 8] = bytes[at / 8] | (((index >> b) & 1) << (7 - at % 8))
+            at = at + 1
+            b = b - 1
+        }
+    }
+    val entropySize = given.size * 4 / 3
+    bip39FromEntropy(cryptoByteString(bytes).slice(0, entropySize)) == mnemonic
+}
+// The 64-byte seed: PBKDF2-HMAC-SHA512, 2048 rounds. Text goes in as given: BIP-39 says NFKD, which ASCII already is, and this doesn't normalize anything else.
+fun bip39Seed(mnemonic: string, passphrase: string): string {
+    val first = cryptoByteString([0, 0, 0, 1])
+    var current = hmacSha512(mnemonic, "mnemonic$passphrase$first")
+    var out = current
+    for (round in 1 until 2048) {
+        current = hmacSha512(mnemonic, current)
+        out = binaryXor(out, current)
+    }
+    out
+}

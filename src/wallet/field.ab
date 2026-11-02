@@ -1,0 +1,125 @@
+import "abla/ct"
+import "abla/crypto"
+import "abla/crypto/bignum"
+
+// Constant-time arithmetic modulo a public odd number of 256 bits, for what signs: on abla/crypto/bignum's Montgomery multiplication, with
+// addition, subtraction and selection in the same style. Values are 8 little-endian 32-bit limbs in memory from bnAllocate, so never held
+// in an ordinary integer, except for a moment as a byte comes out of a string. No branch or memory index from a value. docs/signing.md says what
+// that's worth. A modulus has one scratch area: not for use from two threads at once.
+
+val WALLET_WORDS = 8
+
+trusted fun walletModulus(hex: string): BnModulus {
+    val modulus = BnModulus(bnAllocate(WALLET_WORDS * 3 + 1 + bnScratchWords(WALLET_WORDS)), WALLET_WORDS)
+    walletLoadString(modulus.value(), walletBytesOf(hex), 0, 32, true)
+    bnInverseWord(modulus.inverse(), modulus.value())
+    bnResidueSquare(modulus.square(), modulus.value(), WALLET_WORDS, modulus.scratch())
+    val unit = bnAllocate(WALLET_WORDS)
+    bnStore(unit, secretU32(u32(1)))
+    bnMultiply(modulus, modulus.one(), modulus.square(), unit)
+    bnRelease(unit, WALLET_WORDS)
+    modulus
+}
+// Public constants, in lower-case hex.
+private fun hexDigits(hex: string): array<int> {
+    val out: array<int> = []
+    var i = 0
+    while (i < hex.size) {
+        out.append(walletNibble(hex[i]) * 16 + walletNibble(hex[i + 1]))
+        i = i + 2
+    }
+    out
+}
+private fun walletNibble(c: int): int = if (c >= 97) c - 87 else c - 48
+fun walletBytesOf(hex: string): string = cryptoByteString(hexDigits(hex))
+
+// `count` bytes from `from` of a string into limbs. Positions are public, and each byte goes straight into a secret.
+trusted fun walletLoadString(to: int, bytes: string, from: int, count: int, bigEndian: bool): void {
+    bnClear(to, WALLET_WORDS)
+    for (at in 0 until count) {
+        val source = if (bigEndian) from + count - 1 - at else from + at
+        val limb = to + (at / 4) * 4
+        bnStore(limb, bnLoad(limb) | (secretU32(u32(int(bytes[source]))) << ((at % 4) * 8)))
+    }
+}
+// Limbs to bytes, for what's about to be public or goes back into a caller's string.
+trusted fun walletStoreBytes(from: int, bigEndian: bool): array<int> {
+    val out: array<int> = []
+    for (i in 0 until 32) {
+        val at = if (bigEndian) 31 - i else i
+        out.append(int((bnLoad(from + (at / 4) * 4) >> ((at % 4) * 8)).declassify() & u32(255)))
+    }
+    out
+}
+
+@inline trusted fun walletAddBody(out: int, a: int, b: int, modulus: int, words: int, scratch: int): void {
+    var carry = secretU64(u64(0))
+    for (j in 0 until words) {
+        val sum = bnLoad(a + j * 4).widen() + bnLoad(b + j * 4).widen() + carry
+        bnStore(out + j * 4, sum.low())
+        carry = sum.high().widen()
+    }
+    bnConditionalSubtractBody(out, out, carry.low(), modulus, words, scratch)
+}
+@inline trusted fun walletSubBody(out: int, a: int, b: int, modulus: int, words: int): void {
+    var borrow = secretU32(u32(0))
+    for (j in 0 until words) {
+        val x = bnLoad(a + j * 4)
+        val y = bnLoad(b + j * 4)
+        val difference = x - y - borrow
+        borrow = ((~x & y) | ((~x | y) & difference)) >> 31
+        bnStore(out + j * 4, difference)
+    }
+    val adding = ctIsNonZero(borrow)
+    var carry = secretU64(u64(0))
+    for (j in 0 until words) {
+        val sum = bnLoad(out + j * 4).widen() + (bnLoad(modulus + j * 4) & adding).widen() + carry
+        bnStore(out + j * 4, sum.low())
+        carry = sum.high().widen()
+    }
+}
+// `out` is `a` where the mask has ones, `b` where it has zeros.
+@inline trusted fun walletSelectBody(out: int, a: int, b: int, mask: secretU32, words: int): void {
+    for (j in 0 until words) bnStore(out + j * 4, ctSelect(mask, bnLoad(a + j * 4), bnLoad(b + j * 4)))
+}
+// All ones or zeros from one bit of a little-endian number.
+@inline trusted fun walletBitMaskBody(scalar: int, bit: int): secretU32 = ctFromLowBit(bnLoad(scalar + (bit / 32) * 4) >> (bit % 32))
+
+@noinline trusted fun walletAdd(m: BnModulus, out: int, a: int, b: int): void = walletAddBody(out, a, b, m.value(), m.words, m.scratch())
+@noinline trusted fun walletSub(m: BnModulus, out: int, a: int, b: int): void = walletSubBody(out, a, b, m.value(), m.words)
+@noinline trusted fun walletSelect(out: int, a: int, b: int, mask: secretU32, words: int): void = walletSelectBody(out, a, b, mask, words)
+@noinline trusted fun walletBitMask(scalar: int, bit: int): secretU32 = walletBitMaskBody(scalar, bit)
+
+// Plain to the modular inverse in Montgomery form, by Fermat: the exponent is public, and every step's work doesn't depend on the value.
+trusted fun walletInverse(m: BnModulus, out: int, plain: int, minusTwo: string): void {
+    bnExpPublic(m, out, plain, minusTwo)
+    bnEncode(m, out, out)
+}
+// `wide` is 64 bytes, as two halves of 32 at low and high in limbs; `out` = wide mod the modulus, in plain form. R is 2^256, so high * R is what's asked.
+trusted fun walletReduceWide(m: BnModulus, out: int, low: int, high: int): void {
+    val a = bnAllocate(WALLET_WORDS)
+    val b = bnAllocate(WALLET_WORDS)
+    bnEncode(m, a, low)
+    bnEncode(m, b, high)
+    bnEncode(m, b, b)
+    walletAdd(m, a, a, b)
+    bnDecode(m, out, a)
+    bnRelease(a, WALLET_WORDS)
+    bnRelease(b, WALLET_WORDS)
+}
+// Whether 0 < value < limit, big-endian and 32 bytes each, reading every byte. Only the answer is public: a key or nonce refused is thrown away.
+trusted fun walletInRange(value: string, limit: string): bool {
+    var borrow = secretU32(u32(0))
+    var any = secretU32(u32(0))
+    var i = 31
+    while (i >= 0) {
+        val x = secretU32(u32(int(value[i])))
+        val y = secretU32(u32(int(limit[i])))
+        val difference = x - y - borrow
+        borrow = (difference >> 8) & secretU32(u32(1))
+        any = any | x
+        i = i - 1
+    }
+    (ctIsNonZero(any) & ctIsNonZero(borrow)).declassify() != u32(0)
+}
+trusted fun walletWipeScratch(m: BnModulus): void = bnClear(m.scratch(), bnScratchWords(m.words))

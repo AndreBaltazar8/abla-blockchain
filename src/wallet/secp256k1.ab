@@ -1,0 +1,247 @@
+import "abla/ct"
+import "abla/crypto"
+import "abla/crypto/bignum"
+import "field.ab"
+
+// Signing on secp256k1: public keys from secrets, and ECDSA with RFC 6979's deterministic nonces. The nonce and key stay in abla/ct's secret types, all
+// the way to what is public by design: r, s, and the public key. Each multiplication is 256 doublings and 256 additions by Renes, Costello and Batina's complete
+// formulas, which need no special case for infinity or equal points, and the result of each addition is selected by mask.
+
+private val SECP_P = "fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f"
+private val SECP_N = "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141"
+private val SECP_GX = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+private val SECP_GY = "483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8"
+private val SECP_B3 = "0000000000000000000000000000000000000000000000000000000000000015"
+private val SECP_P_MINUS_2 = "fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2d"
+private val SECP_N_MINUS_2 = "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd036413f"
+private val SECP_HALF_N = "7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0"
+private val secpField: BnModulus = walletModulus(SECP_P)
+private val secpScalars: BnModulus = walletModulus(SECP_N)
+
+// A key's scalar is in range, 1 to n - 1.
+fun secpSecretValid(secret: string): bool = secret.size == 32 && walletInRange(secret, walletBytesOf(SECP_N))
+
+// out + 32 * 0, 1, 2 = X, Y, Z of P + Q. Algorithm 7 of Renes, Costello, Batina (2015), for a = 0; works for P = Q and for infinity. `work` has 6 elements.
+private trusted fun secpAddPoints(out: int, p: int, q: int, b3: int, work: int): void {
+    val f = secpField
+    val x1 = p
+    val y1 = p + 32
+    val z1 = p + 64
+    val x2 = q
+    val y2 = q + 32
+    val z2 = q + 64
+    val t0 = work
+    val t1 = work + 32
+    val t2 = work + 64
+    val t3 = work + 96
+    val t4 = work + 128
+    val x3 = work + 160
+    val y3 = work + 192
+    val z3 = work + 224
+    bnMultiply(f, t0, x1, x2)
+    bnMultiply(f, t1, y1, y2)
+    bnMultiply(f, t2, z1, z2)
+    walletAdd(f, t3, x1, y1)
+    walletAdd(f, t4, x2, y2)
+    bnMultiply(f, t3, t3, t4)
+    walletAdd(f, t4, t0, t1)
+    walletSub(f, t3, t3, t4)
+    walletAdd(f, t4, y1, z1)
+    walletAdd(f, x3, y2, z2)
+    bnMultiply(f, t4, t4, x3)
+    walletAdd(f, x3, t1, t2)
+    walletSub(f, t4, t4, x3)
+    walletAdd(f, x3, x1, z1)
+    walletAdd(f, y3, x2, z2)
+    bnMultiply(f, x3, x3, y3)
+    walletAdd(f, y3, t0, t2)
+    walletSub(f, y3, x3, y3)
+    walletAdd(f, x3, t0, t0)
+    walletAdd(f, t0, x3, t0)
+    bnMultiply(f, t2, b3, t2)
+    walletAdd(f, z3, t1, t2)
+    walletSub(f, t1, t1, t2)
+    bnMultiply(f, y3, b3, y3)
+    bnMultiply(f, x3, t4, y3)
+    bnMultiply(f, t2, t3, t1)
+    walletSub(f, x3, t2, x3)
+    bnMultiply(f, y3, y3, t0)
+    bnMultiply(f, t1, t1, z3)
+    walletAdd(f, y3, t1, y3)
+    bnMultiply(f, t0, t0, t3)
+    bnMultiply(f, z3, z3, t4)
+    walletAdd(f, z3, z3, t0)
+    bnCopy(out, x3, WALLET_WORDS * 3)
+}
+// `x` and `y` in plain form, of `scalar` (limbs, below n and not zero) times the generator.
+private trusted fun secpBaseMultiply(x: int, y: int, scalar: int): void {
+    val f = secpField
+    val total = 6 + 3 + 3 + 3 + 8 + 1
+    val memory = bnAllocate(total * WALLET_WORDS)
+    val r = memory
+    val q = memory + 96
+    val g = memory + 192
+    val b3 = memory + 288
+    val work = memory + 320
+    val inverse = memory + 576
+    val plain = memory + 608
+    walletLoadString(g, walletBytesOf(SECP_GX), 0, 32, true)
+    bnEncode(f, g, g)
+    walletLoadString(g + 32, walletBytesOf(SECP_GY), 0, 32, true)
+    bnEncode(f, g + 32, g + 32)
+    bnCopy(g + 64, f.one(), WALLET_WORDS)
+    walletLoadString(b3, walletBytesOf(SECP_B3), 0, 32, true)
+    bnEncode(f, b3, b3)
+    // Infinity: 0, 1, 0.
+    bnCopy(r + 32, f.one(), WALLET_WORDS)
+    var bit = 255
+    while (bit >= 0) {
+        secpAddPoints(r, r, r, b3, work)
+        secpAddPoints(q, r, g, b3, work)
+        walletSelect(r, q, r, walletBitMask(scalar, bit), WALLET_WORDS * 3)
+        bit = bit - 1
+    }
+    bnDecode(f, plain, r + 64)
+    walletInverse(f, inverse, plain, walletBytesOf(SECP_P_MINUS_2))
+    bnMultiply(f, plain, r, inverse)
+    bnDecode(f, x, plain)
+    bnMultiply(f, plain, r + 32, inverse)
+    bnDecode(f, y, plain)
+    bnRelease(memory, total * WALLET_WORDS)
+    walletWipeScratch(f)
+}
+// The 33-byte compressed key of a valid secret. "" for one that isn't.
+trusted fun secpPublicKeyOf(secret: string): string {
+    if (!secpSecretValid(secret)) return ""
+    val scalar = bnAllocate(WALLET_WORDS * 3)
+    walletLoadString(scalar, secret, 0, 32, true)
+    secpBaseMultiply(scalar + 32, scalar + 64, scalar)
+    val x = walletStoreBytes(scalar + 32, true)
+    val y = walletStoreBytes(scalar + 64, true)
+    bnRelease(scalar, WALLET_WORDS * 3)
+    cryptoByteString([2 + (y[31] & 1)]) + cryptoByteString(x)
+}
+// (a + b) mod n, of two scalars below n. For BIP32. "" when the sum is zero, which a caller throws away.
+trusted fun secpScalarAdd(a: string, b: string): string {
+    val memory = bnAllocate(WALLET_WORDS * 3)
+    walletLoadString(memory, a, 0, 32, true)
+    walletLoadString(memory + 32, b, 0, 32, true)
+    walletAdd(secpScalars, memory + 64, memory, memory + 32)
+    val out = cryptoByteString(walletStoreBytes(memory + 64, true))
+    bnRelease(memory, WALLET_WORDS * 3)
+    walletWipeScratch(secpScalars)
+    if (secpSecretValid(out)) out else ""
+}
+// RFC 6979, section 3.2, for SHA-256: `digest` reduced for bits2octets. Each candidate goes out if it's in range; one that isn't was never used.
+private fun rfc6979First(secret: string, digest: string): Rfc6979 {
+    val zeros = cryptoByteString(walletRepeat(0))
+    val ones = cryptoByteString(walletRepeat(1))
+    val h1 = digestReduced(digest)
+    var k = hmacSha256(zeros, ones + cryptoByteString([0]) + secret + h1)
+    var v = hmacSha256(k, ones)
+    k = hmacSha256(k, v + cryptoByteString([1]) + secret + h1)
+    v = hmacSha256(k, v)
+    Rfc6979(k, v)
+}
+private class Rfc6979(var k: string, var v: string) {
+    fun next(): string {
+        while (true) {
+            this.v = hmacSha256(this.k, this.v)
+            val candidate = this.v
+            this.k = hmacSha256(this.k, this.v + cryptoByteString([0]))
+            this.v = hmacSha256(this.k, this.v)
+            if (secpSecretValid(candidate)) return candidate
+        }
+        ""
+    }
+}
+private fun walletRepeat(value: int): array<int> {
+    val out: array<int> = []
+    for (i in 0 until 32) out.append(value)
+    out
+}
+private fun digestReduced(digest: string): string {
+    if (digest.size == 32 && !bytesLess(digest, walletBytesOf(SECP_N))) return bytesSubtract(digest, walletBytesOf(SECP_N))
+    digest
+}
+// Public values: what's signed, and s once it's made.
+private fun bytesLess(a: string, b: string): bool {
+    for (i in 0 until 32) if (a[i] != b[i]) return a[i] < b[i]
+    false
+}
+private fun bytesSubtract(a: string, b: string): string {
+    val out = walletRepeat(0)
+    var borrow = 0
+    var i = 31
+    while (i >= 0) {
+        val d = int(a[i]) - int(b[i]) - borrow
+        out[i] = d & 255
+        borrow = if (d < 0) 1 else 0
+        i = i - 1
+    }
+    cryptoByteString(out)
+}
+// `r` and `s` are 32 bytes each, s is the low one, and `yOdd` is what Ethereum's y parity means. Not ok for a bad key or digest.
+class SecpSigned(val ok: bool, val r: string, val s: string, val yOdd: bool)
+trusted fun secpSign(secret: string, digest: string): SecpSigned {
+    if (digest.size != 32 || !secpSecretValid(secret)) return SecpSigned(false, "", "", false)
+    val nonces = rfc6979First(secret, digest)
+    val total = 9
+    val memory = bnAllocate(total * WALLET_WORDS)
+    val k = memory
+    val x = memory + 32
+    val y = memory + 64
+    val d = memory + 96
+    val z = memory + 128
+    val rm = memory + 160
+    val kInverse = memory + 192
+    val out = memory + 224
+    val n = walletBytesOf(SECP_N)
+    while (true) {
+        walletLoadString(k, nonces.next(), 0, 32, true)
+        secpBaseMultiply(x, y, k)
+        val xBytes = cryptoByteString(walletStoreBytes(x, true))
+        val yBytes = walletStoreBytes(y, true)
+        // r is public. Past n, it would lose what y parity means, and that's one nonce in 2^128: take the next.
+        if (bytesLess(xBytes, n)) {
+            walletLoadString(rm, xBytes, 0, 32, true)
+            walletLoadString(d, secret, 0, 32, true)
+            walletLoadString(z, digestReduced(digest), 0, 32, true)
+            val f = secpScalars
+            walletInverse(f, kInverse, k, walletBytesOf(SECP_N_MINUS_2))
+            bnEncode(f, rm, rm)
+            bnEncode(f, d, d)
+            bnEncode(f, z, z)
+            bnMultiply(f, out, rm, d)
+            walletAdd(f, out, out, z)
+            bnMultiply(f, out, out, kInverse)
+            bnDecode(f, out, out)
+            var s = cryptoByteString(walletStoreBytes(out, true))
+            val zero = !secpSecretValid(s)
+            if (!zero) {
+                var odd = (yBytes[31] & 1) == 1
+                if (bytesLess(walletBytesOf(SECP_HALF_N), s)) {
+                    s = bytesSubtract(n, s)
+                    odd = !odd
+                }
+                bnRelease(memory, total * WALLET_WORDS)
+                walletWipeScratch(f)
+                return SecpSigned(true, xBytes, s, odd)
+            }
+        }
+    }
+    SecpSigned(false, "", "", false)
+}
+// DER, as Bitcoin's scripts take it.
+fun secpSignatureDer(signed: SecpSigned): string {
+    val r = derInteger(signed.r)
+    val s = derInteger(signed.s)
+    cryptoByteString([48, r.size + s.size]) + r + s
+}
+private fun derInteger(value: string): string {
+    var start = 0
+    while (start < value.size - 1 && value[start] == 0) start = start + 1
+    val body = value.slice(start, value.size)
+    val pad = body[0] >= 128
+    cryptoByteString([2, body.size + (if (pad) 1 else 0)]) + (if (pad) cryptoByteString([0]) else "") + body
+}

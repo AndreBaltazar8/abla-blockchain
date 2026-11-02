@@ -1,0 +1,21 @@
+// What tools/test-ct.sh reads the assembly of: the wallet's own steps on secrets, as ablac's tests/cases/ct/fixture.ab does for bignum's. No conditional branch, memory index or division from a secret.
+import "abla/ct"
+import "abla/crypto/bignum"
+import "../../src/wallet/field.ab"
+
+@inline @export("wallet_fix_add")
+trusted fun fixAdd(out: int, a: int, b: int, modulus: int, words: int, scratch: int): void = walletAddBody(out, a, b, modulus, words, scratch)
+@inline @export("wallet_fix_sub")
+trusted fun fixSub(out: int, a: int, b: int, modulus: int, words: int): void = walletSubBody(out, a, b, modulus, words)
+@inline @export("wallet_fix_select")
+trusted fun fixSelect(mask: u32, out: int, a: int, b: int, words: int): void = walletSelectBody(out, a, b, secretU32(mask), words)
+@inline @export("wallet_fix_bit")
+trusted fun fixBit(scalar: int, bit: int): u32 = walletBitMaskBody(scalar, bit).declassify()
+@inline @export("wallet_fix_montgomery")
+trusted fun fixMontgomery(out: int, a: int, b: int, modulus: int, words: int): void = bnMontgomeryMultiplyBody(out, a, b, modulus, modulus + words * 4, words, modulus + words * 8)
+// Must be caught, or a pass here means nothing.
+@noinline @export("wallet_leak_branch")
+trusted fun leakBranch(a: u32): void {
+    if (a == u32(0)) bnStore(4096, secretU32(u32(1)))
+}
+fun main: int = 0
