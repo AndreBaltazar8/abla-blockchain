@@ -45,7 +45,7 @@ All of a package's subpaths are one locked revision, so a program can use severa
 | `signature`, `signature/ecdsa`, `signature/ed25519` |
 | `encoding`, `encoding/base58`, `encoding/bech32` |
 | `net`, `net/endpoint` |
-| `bitcoin`, `bitcoin/address`, `bitcoin/bip32`, `bitcoin/descriptor`, `bitcoin/esplora`, `bitcoin/raw` |
+| `bitcoin`, `bitcoin/address`, `bitcoin/bip32`, `bitcoin/descriptor`, `bitcoin/esplora`, `bitcoin/esplora-stream`, `bitcoin/raw` |
 | `evm`, `evm/address`, `evm/erc20`, `evm/rlp`, `evm/rpc` |
 | `stellar`, `stellar/horizon`, `stellar/strkey`, `stellar/xdr` |
 | `wallet`, `wallet/secp256k1`, `wallet/ed25519`, `wallet/bip39`, `wallet/bip32`, `wallet/bitcoin`, `wallet/evm`, `wallet/stellar`, `wallet/field`, `wallet/bip39_english` |
@@ -69,3 +69,7 @@ An amount is an integer in the asset's smallest unit, always: `uint256` for wei,
 ## Testing
 
 `make test` needs only the compiler and git; `tests/subpaths.sh` imports each subpath from a copy of the working tree. Vectors come from the specifications, and client tests replay answers captured from real testnets: see [SOURCES.md](SOURCES.md).
+
+The Esplora address client returns `ok=false`, `complete=false`, partial `transactions` and `nextTxid` when its page budget is exhausted. Resume with `addressTransactions(address, maxPages, nextTxid)`; only the actual end returns `complete=true`.
+
+For large HTTP bodies, `bitcoin/esplora-stream` exposes `EsploraStream(address, receive)`. Feed decoded HTTP body chunks into `feed`, then require `finish()` before committing the callback observations. Script and witness fields are discarded as they arrive; retained scalar tokens are capped at 512 bytes, nesting at 64, transactions at 75 per page and matching outputs at 32768 per transaction (the latter two are configurable). The callback receives original output positions and only outputs to `address`, or all outputs if it is empty. HTTP framing and transport deadlines remain the caller's responsibility.

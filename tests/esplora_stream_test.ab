@@ -1,0 +1,54 @@
+import "abla/test"
+import "../src/bitcoin/esplora-stream.ab"
+
+fun main: int {
+    val got: array<BitcoinTransaction> = []
+    var read = EsploraStream("wanted", { tx: BitcoinTransaction -> got.append(tx) })
+    val text = "[{\"txid\":\"first\",\"fee\":123,\"vin\":[{\"prevout\":{\"scriptpubkey_address\":\"sender\"},\"witness\":[\""
+    expect(read.feed(text), "start an input witness")
+    val padding = "x".repeat(65536)
+    var i = 0
+    while (i < 260) { expect(read.feed(padding), "skip witness chunk $i"); i = i + 1 }
+    expect(read.feed("\"]}],\"vout\":[{\"scriptpubkey_address\":\"other\",\"value\":9},{\"scriptpubkey_address\":\"wanted\",\"value\":12345}],\"status\":{\"confirmed\":true,\"block_height\":42,\"block_hash\":\"abc\",\"block_time\":1700000000}},{\"txid\":\"second\",\"vout\":[{\"scriptpubkey_address\":\"wanted\",\"value\":3}],\"status\":{\"confirmed\":false}}]"), "finish a reply larger than 16 MiB")
+    expect(read.finish(), "complete streamed JSON")
+    expectEqual(got.size, 2, "callback per transaction")
+    expectEqual(got[0].outputs.size, 1, "only matching outputs retained")
+    expectEqual(got[0].outputs[0].index, 1, "original output position")
+    expectEqual(got[0].outputs[0].value, 12345, "amount")
+    expectEqual(got[0].firstInputAddress, "sender", "sender survives the discarded witness")
+    expectEqual(got[0].height, 42, "height")
+    expectEqual(got[0].fee, 123, "fee")
+    expectEqual(got[1].outputs[0].value, 3, "a new output array for each callback")
+    expectEqual(read.confirmed, 1, "confirmed count for pagination")
+    expectEqual(read.lastConfirmed, "first", "pagination token")
+    expect(read.peakTokenBytes < 512, "held token bytes bounded independently of response size")
+    var split = EsploraStream("", { tx: BitcoinTransaction -> return })
+    val escaped = "[{\"txid\":\"q\\\"\\u0061\",\"vout\":[]}]"
+    for (byte in 0 until escaped.size) expect(split.feed(escaped.slice(byte, byte + 1)), "any byte boundary $byte")
+    expect(split.finish(), "escapes split between chunks")
+    for (bad in ["{}", "[1]", "[{\"txid\":\"x\",}]", "[{\"txid\":\"x\",\"extra\":\"\\q\"}]", "[{\"txid\":\"x\"}]x"]) {
+        var invalid = EsploraStream("", { tx: BitcoinTransaction -> return })
+        expect(!invalid.feed(bad) || !invalid.finish(), "malformed reply is refused")
+    }
+    var cut = EsploraStream("", { tx: BitcoinTransaction -> return })
+    expect(cut.feed("[{\"txid\":\"unfinished"), "a partial read is allowed")
+    expect(!cut.finish(), "a truncated reply is never complete")
+    var capped = EsploraStream("", { tx: BitcoinTransaction -> return }, maxTransactions = 1)
+    expect(!capped.feed("[{\"txid\":\"a\"},{\"txid\":\"b\"}]"), "a hostile oversized page cannot grow the callback list without a bound")
+    var outputs = EsploraStream("", { tx: BitcoinTransaction -> return }, maxOutputs = 1)
+    expect(!outputs.feed("[{\"txid\":\"a\",\"vout\":[{\"value\":1},{\"value\":2}]}]"), "matching outputs have their own bound")
+    val tx = { id: string -> $json {"txid": id, "status": {"confirmed": true}} }
+    val page: array<Json> = []
+    for (n in 0 until 25) page.append(tx("id-$n"))
+    val client = esploraClient(ChainEndpoint({ request: HttpRequest ->
+        val body = if (request.path.endsWith("/chain/id-24")) "[]" else jsonStringify(jsonArray(page))
+        HttpClientResult(HttpResponse(200, [], body), true, true)
+    }, ""))
+    val partial = client.addressTransactions("a", 1)
+    expect(!partial.ok && !partial.complete, "a page budget is never reported as a full success")
+    expectEqual(partial.nextTxid, "id-24", "explicit resume token")
+    expectEqual(partial.transactions.size, 25, "partial observations stay available")
+    val resumed = client.addressTransactions("a", 1, partial.nextTxid)
+    expect(resumed.ok && resumed.complete, "resume reaches the actual end")
+    testsPassed()
+}

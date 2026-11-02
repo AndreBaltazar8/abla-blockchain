@@ -1,0 +1,179 @@
+// Incremental projection of Esplora transaction arrays. Script/witness strings are validated and discarded while arriving;
+// only the first input's address, transaction metadata and matching outputs survive. No whole response or transaction is held.
+export import "esplora.ab"
+import "abla/text"
+
+class EsploraFrame(val path: string, val object: bool, val keep: bool, var state: int = 0, var index: int = 0, var key: string = "", val keys: array<string> = [], val values: array<Json> = [])
+class EsploraStream(
+    val address: string,
+    val receive: (BitcoinTransaction) -> void,
+    val maxTransactions: int = 75,
+    val maxOutputs: int = 32768,
+    val frames: array<EsploraFrame> = [],
+    var outputs: array<BitcoinOutput> = [],
+    var error: string = "",
+    var complete: bool = false,
+    var started: bool = false,
+    var token: string = "",
+    var tokenKind: int = 0,
+    var tokenKeep: bool = false,
+    var tokenKey: bool = false,
+    var escaped: bool = false,
+    var unicode: int = 0,
+    var confirmed: int = 0,
+    var transactions: int = 0,
+    var lastConfirmed: string = "",
+    var peakTokenBytes: int = 0
+) {
+    fun reject(message: string): bool { error = message; false }
+    fun wanted(path: string): bool = path == "" || path == "/#" || path == "/#/txid" || path == "/#/fee" ||
+        path == "/#/status" || path == "/#/status/confirmed" || path == "/#/status/block_height" || path == "/#/status/block_hash" || path == "/#/status/block_time" ||
+        path == "/#/vin" || path == "/#/vin/0" || path == "/#/vin/0/prevout" || path == "/#/vin/0/prevout/scriptpubkey_address" ||
+        path == "/#/vout" || path == "/#/vout/#" || path == "/#/vout/#/scriptpubkey_address" || path == "/#/vout/#/value"
+    fun path(): string {
+        if (frames.size == 0) return ""
+        val f = frames[frames.size - 1]
+        "${f.path}/${if (f.object) f.key.replace("~", "~0").replace("/", "~1") else if (f.path == "/#/vin") "${f.index}" else "#"}"
+    }
+    fun expects(): bool {
+        if (frames.size == 0) return !started
+        val f = frames[frames.size - 1]
+        if (f.object) f.state == 2 else f.state == 0 || f.state == 2
+    }
+    fun finishValue(value: Json, path: string): bool {
+        if (frames.size == 0) { complete = true; return true }
+        val f = frames[frames.size - 1]
+        val object = f.object
+        val nextIndex = if (object) f.index else f.index + 1
+        if (path == "/#/vout/#") {
+            val a = value.getString("scriptpubkey_address")
+            if (address == "" || a == address) {
+                if (outputs.size >= maxOutputs) return reject("too many matching outputs in one transaction")
+                outputs.append(BitcoinOutput(f.index, a, value.getInt("value")))
+            }
+        } else if (path == "/#") {
+            val read = esploraTransactionFrom(value)
+            val transaction = BitcoinTransaction(read.txid, read.confirmed, read.height, read.blockHash, read.blockTime, read.fee, read.firstInputAddress, outputs)
+            if (transaction.txid == "") return reject("a transaction has no txid")
+            if (transaction.confirmed) { confirmed = confirmed + 1; lastConfirmed = transaction.txid }
+            if (transactions >= maxTransactions) return reject("too many transactions in one Esplora page")
+            transactions = transactions + 1
+            val consume = receive
+            consume(transaction)
+            // The callback owns these output objects; clear a fresh array in the next transaction, never mutate that one.
+        } else if (f.keep && wanted(path)) {
+            val keys: array<string> = []
+            val values: array<Json> = []
+            for (key in f.keys) keys.append(key)
+            for (item in f.values) values.append(item)
+            if (f.object) keys.append(f.key)
+            values.append(value)
+            frames[frames.size - 1] = EsploraFrame(f.path, f.object, f.keep, f.state, f.index, f.key, keys, values)
+        }
+        update(if (object) 3 else 1, nextIndex)
+        true
+    }
+    fun update(state: int, index: int = -1, key: string? = null): void {
+        val at = frames.size - 1
+        val f = frames[at]
+        frames[at] = EsploraFrame(f.path, f.object, f.keep, state, if (index >= 0) index else f.index, if (key != null) key else f.key, f.keys, f.values)
+        return
+    }
+    fun close(object: bool): bool {
+        if (frames.size == 0) return reject("unexpected container end")
+        val f = frames[frames.size - 1]
+        if (f.object != object || (object && f.state != 0 && f.state != 3) || (!object && f.state != 0 && f.state != 1)) return reject("incomplete container")
+        val value = if (!f.keep) jsonNull() else if (object) jsonObject(f.keys, f.values) else jsonArray(f.values)
+        val path = f.path
+        frames.truncate(frames.size - 1)
+        finishValue(value, path)
+    }
+    fun scalar(): bool {
+        val parsed = jsonParse(token)
+        if (!parsed.succeeded) return reject("invalid scalar")
+        if (tokenKey) {
+            val f = frames[frames.size - 1]
+            update(1, key = parsed.value.asString())
+        } else if (!finishValue(if (tokenKeep) parsed.value else jsonNull(), path())) return false
+        token = ""
+        tokenKind = 0
+        true
+    }
+    fun append(chunk: string, at: int): bool {
+        if (tokenKeep || tokenKey || tokenKind == 2) {
+            if (token.size >= 512) return reject("a key or retained scalar exceeds 512 bytes")
+            token = token + chunk.slice(at, at + 1)
+            if (token.size > peakTokenBytes) peakTokenBytes = token.size
+        }
+        true
+    }
+    fun feed(chunk: string): bool {
+        if (error != "") return false
+        var at = 0
+        while (at < chunk.size) {
+            val c = chunk[at]
+            if (tokenKind == 1) {
+                if (unicode > 0) {
+                    if (!((c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102))) return reject("invalid unicode escape")
+                    unicode = unicode - 1
+                } else if (escaped) {
+                    if (c == 117) unicode = 4
+                    else if (c != 34 && c != 92 && c != 47 && c != 98 && c != 102 && c != 110 && c != 114 && c != 116) return reject("invalid string escape")
+                    escaped = false
+                } else if (c == 92) escaped = true
+                else if (c == 34) {
+                    if (tokenKeep || tokenKey) { if (!append(chunk, at) || !scalar()) return false }
+                    else { tokenKind = 0; if (!finishValue(jsonNull(), path())) return false }
+                    at = at + 1
+                    continue
+                } else if (c < 32) return reject("control byte in string")
+                if ((tokenKeep || tokenKey) && !append(chunk, at)) return false
+                at = at + 1
+                continue
+            }
+            if (tokenKind == 2) {
+                if (c == 32 || c == 9 || c == 10 || c == 13 || c == 44 || c == 93 || c == 125) { if (!scalar()) return false; continue }
+                if (!append(chunk, at)) return false
+                at = at + 1
+                continue
+            }
+            if (c == 32 || c == 9 || c == 10 || c == 13) { at = at + 1; continue }
+            if (complete) return reject("trailing bytes after the array")
+            if (c == 93 || c == 125) { if (!close(c == 125)) return false; at = at + 1; continue }
+            if (frames.size > 0) {
+                val f = frames[frames.size - 1]
+                if (c == 58 && f.object && f.state == 1) { update(2); at = at + 1; continue }
+                if (c == 44 && ((f.object && f.state == 3) || (!f.object && f.state == 1))) {
+                    update(if (f.object) 4 else 2)
+                    at = at + 1
+                    continue
+                }
+                if (f.object && (f.state == 0 || f.state == 4)) {
+                    if (c != 34) return reject("an object key is not a string")
+                    tokenKind = 1; tokenKey = true; tokenKeep = true; token = "\""; escaped = false; unicode = 0
+                    at = at + 1
+                    continue
+                }
+            }
+            if (!expects()) return reject("unexpected value")
+            val p = path()
+            if (!started && c != 91) return reject("the reply is not an array")
+            started = true
+            if (c == 123 || c == 91) {
+                if (frames.size >= 64) return reject("nesting exceeds 64 levels")
+                if (p == "/#") outputs = []
+                frames.append(EsploraFrame(p, c == 123, wanted(p)))
+            } else {
+                tokenKind = if (c == 34) 1 else 2
+                tokenKey = false
+                tokenKeep = wanted(p)
+                token = ""
+                escaped = false; unicode = 0
+                if (!append(chunk, at)) return false
+            }
+            at = at + 1
+        }
+        true
+    }
+    fun finish(): bool = error == "" && complete && frames.size == 0 && tokenKind == 0
+}

@@ -44,3 +44,5 @@ entry = "src/blockchain.ab"
 "wallet/bitcoin" = "src/wallet/bitcoin.ab"
 "wallet/evm" = "src/wallet/evm.ab"
 "wallet/stellar" = "src/wallet/stellar.ab"
+
+"bitcoin/esplora-stream" = "src/bitcoin/esplora-stream.ab"

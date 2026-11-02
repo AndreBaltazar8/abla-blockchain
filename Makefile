@@ -1,6 +1,6 @@
 ABLAC_DIR ?= $(abspath ../ablac)
 COMPILER ?= ablac
-TESTS := tests/u256_test.ab tests/vectors_test.ab tests/bitcoin_test.ab tests/evm_test.ab tests/stellar_test.ab tests/signature_test.ab tests/raw_test.ab tests/wallet_test.ab
+TESTS := tests/u256_test.ab tests/vectors_test.ab tests/bitcoin_test.ab tests/esplora_stream_test.ab tests/evm_test.ab tests/stellar_test.ab tests/signature_test.ab tests/raw_test.ab tests/wallet_test.ab
 
 .PHONY: test test-ct
 

@@ -7,7 +7,7 @@ class BitcoinOutput(val index: int, val address: string, val value: int)
 // Height, hash and time are -1, "" and 0 until it's mined.
 class BitcoinTransaction(val txid: string, val confirmed: bool, val height: int, val blockHash: string, val blockTime: int, val fee: int, val firstInputAddress: string, val outputs: array<BitcoinOutput>)
 class EsploraHeight(val ok: bool, val message: string, val height: int)
-class EsploraTransactions(val ok: bool, val message: string, val transactions: array<BitcoinTransaction>)
+class EsploraTransactions(val ok: bool, val message: string, val transactions: array<BitcoinTransaction>, val complete: bool = false, val nextTxid: string = "")
 
 fun esploraTransactionFrom(tx: Json): BitcoinTransaction {
     val status = tx.get("status")
@@ -28,16 +28,19 @@ class EsploraClient(val endpoint: ChainEndpoint) {
     fun transaction(txid: string): EsploraTransactions {
         val reply = this.endpoint.send("GET", "/tx/$txid")
         if (!reply.ok) return EsploraTransactions(false, reply.message, [])
-        EsploraTransactions(true, "", [esploraTransactionFrom(reply.value)])
+        EsploraTransactions(true, "", [esploraTransactionFrom(reply.value)], true)
     }
-    // Unconfirmed first, then confirmed, newest first. Esplora pages confirmed ones 25 at a time, and this reads up to `maxPages` of them.
-    fun addressTransactions(address: string, maxPages: int = 4): EsploraTransactions {
+    // Unconfirmed first, then confirmed, newest first. At the page budget, ok/complete are false, transactions holds the
+    // partial observations and nextTxid is the explicit continuation: pass it as afterTxid on the next call.
+    fun addressTransactions(address: string, maxPages: int = 4, afterTxid: string = ""): EsploraTransactions {
         val out: array<BitcoinTransaction> = []
-        var path = "/address/$address/txs"
+        if (maxPages < 1) return EsploraTransactions(false, "maxPages must be positive", out)
+        var last = afterTxid
+        var path = "/address/$address/txs${if (afterTxid == "") "" else "/chain/$afterTxid"}"
         for (page in 0 until maxPages) {
             val reply = this.endpoint.send("GET", path)
             if (!reply.ok) return EsploraTransactions(false, reply.message, [])
-            var last = ""
+            if (!reply.value.isArray()) return EsploraTransactions(false, "the address list is not an array", [])
             var confirmed = 0
             for (tx in reply.value.values) {
                 val read = esploraTransactionFrom(tx)
@@ -47,10 +50,10 @@ class EsploraClient(val endpoint: ChainEndpoint) {
                     last = read.txid
                 }
             }
-            if (confirmed < 25) return EsploraTransactions(true, "", out)
+            if (confirmed < 25) return EsploraTransactions(true, "", out, true)
             path = "/address/$address/txs/chain/$last"
         }
-        EsploraTransactions(true, "", out)
+        EsploraTransactions(false, "address history continues; resume with nextTxid", out, false, last)
     }
 }
 fun esploraClient(endpoint: ChainEndpoint): EsploraClient = EsploraClient(endpoint)
