@@ -14,13 +14,13 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: AndreBaltazar8/setup-abla@b21e1290aa49862e7bf187dc84b6b3511f4b571e # v1.0.0
         with:
-          version: '0.2.30'
+          version: '0.2.31'
       - name: Tests against official vectors and real testnet data
         run: make test COMPILER=ablac
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: AndreBaltazar8/ablac
-          ref: v0.2.30
+          ref: v0.2.31
           path: ablac-source
       - name: The assembly of what handles secrets
         run: |
