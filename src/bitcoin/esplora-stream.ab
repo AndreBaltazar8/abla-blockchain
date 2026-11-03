@@ -1,5 +1,6 @@
 // Incremental projection of Esplora transaction arrays. Script/witness strings are validated and discarded while arriving;
-// only the first input's address, transaction metadata and matching outputs survive. No whole response or transaction is held.
+// only transaction metadata and matching outputs survive, with input addresses optionally retained up to their own bound.
+// No whole response or transaction is held. An empty address projects every output; output indices always stay original.
 export import "esplora.ab"
 import "abla/text"
 
@@ -23,13 +24,20 @@ class EsploraStream(
     var confirmed: int = 0,
     var transactions: int = 0,
     var lastConfirmed: string = "",
-    var peakTokenBytes: int = 0
+    var peakTokenBytes: int = 0,
+    val collectInputs: bool = false,
+    val maxInputs: int = 32768,
+    var inputAddresses: array<string> = []
 ) {
     fun reject(message: string): bool { error = message; false }
+    fun inputAddressPath(path: string): bool {
+        val parts = path.split("/")
+        parts.size == 6 && parts[1] == "#" && parts[2] == "vin" && parts[4] == "prevout" && parts[5] == "scriptpubkey_address"
+    }
     fun wanted(path: string): bool = path == "" || path == "/#" || path == "/#/txid" || path == "/#/fee" ||
         path == "/#/status" || path == "/#/status/confirmed" || path == "/#/status/block_height" || path == "/#/status/block_hash" || path == "/#/status/block_time" ||
         path == "/#/vin" || path == "/#/vin/0" || path == "/#/vin/0/prevout" || path == "/#/vin/0/prevout/scriptpubkey_address" ||
-        path == "/#/vout" || path == "/#/vout/#" || path == "/#/vout/#/scriptpubkey_address" || path == "/#/vout/#/value"
+        path == "/#/vout" || path == "/#/vout/#" || path == "/#/vout/#/scriptpubkey_address" || path == "/#/vout/#/value" || (collectInputs && inputAddressPath(path))
     fun path(): string {
         if (frames.size == 0) return ""
         val f = frames[frames.size - 1]
@@ -45,6 +53,10 @@ class EsploraStream(
         val f = frames[frames.size - 1]
         val object = f.object
         val nextIndex = if (object) f.index else f.index + 1
+        if (collectInputs && inputAddressPath(path) && value.isString() && value.asString() != "") {
+            if (inputAddresses.size >= maxInputs) return reject("too many retained input addresses in one transaction")
+            inputAddresses.append(value.asString())
+        }
         if (path == "/#/vout/#") {
             val a = value.getString("scriptpubkey_address")
             if (address == "" || a == address) {
@@ -53,7 +65,7 @@ class EsploraStream(
             }
         } else if (path == "/#") {
             val read = esploraTransactionFrom(value)
-            val transaction = BitcoinTransaction(read.txid, read.confirmed, read.height, read.blockHash, read.blockTime, read.fee, read.firstInputAddress, outputs)
+            val transaction = BitcoinTransaction(read.txid, read.confirmed, read.height, read.blockHash, read.blockTime, read.fee, read.firstInputAddress, outputs, inputAddresses)
             if (transaction.txid == "") return reject("a transaction has no txid")
             if (transaction.confirmed) { confirmed = confirmed + 1; lastConfirmed = transaction.txid }
             if (transactions >= maxTransactions) return reject("too many transactions in one Esplora page")
@@ -161,7 +173,7 @@ class EsploraStream(
             started = true
             if (c == 123 || c == 91) {
                 if (frames.size >= 64) return reject("nesting exceeds 64 levels")
-                if (p == "/#") outputs = []
+                if (p == "/#") { outputs = []; inputAddresses = [] }
                 frames.append(EsploraFrame(p, c == 123, wanted(p)))
             } else {
                 tokenKind = if (c == 34) 1 else 2

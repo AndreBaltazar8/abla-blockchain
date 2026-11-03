@@ -37,6 +37,28 @@ fun main: int {
     expect(!capped.feed("[{\"txid\":\"a\"},{\"txid\":\"b\"}]"), "a hostile oversized page cannot grow the callback list without a bound")
     var outputs = EsploraStream("", { tx: BitcoinTransaction -> return }, maxOutputs = 1)
     expect(!outputs.feed("[{\"txid\":\"a\",\"vout\":[{\"value\":1},{\"value\":2}]}]"), "matching outputs have their own bound")
+    val spent: array<BitcoinTransaction> = []
+    var outgoing = EsploraStream("", { tx: BitcoinTransaction -> spent.append(tx) }, collectInputs = true)
+    // Outputs may precede inputs, and the watched merchant need not fund the first input.
+    val spending = $json [{"txid":"refund","vout":[{"scriptpubkey_address":"payer","value":42},{"scriptpubkey_address":"merchant","value":7}],"vin":[{"prevout":{"scriptpubkey_address":"other"}},{"prevout":{"scriptpubkey_address":"merchant"},"witness":["ignored"]}]},{"txid":"next","vout":[]}]
+    val spendingText = jsonStringify(spending)
+    for (at in 0 until spendingText.size) expect(outgoing.feed(spendingText.slice(at, at + 1)), "spend projection at byte $at")
+    expect(outgoing.finish(), "outgoing projection finishes")
+    expectEqual(spent[0].inputAddresses.size, 2, "all input addresses, not only the first")
+    expectEqual(spent[0].inputAddresses[1], "merchant", "the second input can belong to the watched wallet")
+    expectEqual(spent[0].outputs[0].address, "payer", "outgoing destination survives projection")
+    expectEqual(spent[0].outputs[1].index, 1, "change output index is retained")
+    expectEqual(spent[1].inputAddresses.size, 0, "input arrays reset between callback transactions")
+    expectEqual(got[0].inputAddresses.size, 0, "input projection stays opt-in")
+    val direct = esploraTransactionFrom(spending.at(0))
+    expectEqual(direct.inputAddresses[1], "merchant", "direct transaction queries expose the same inputs")
+    var cappedInputs = EsploraStream("", { tx: BitcoinTransaction -> return }, collectInputs = true, maxInputs = 1)
+    expect(!cappedInputs.feed(spendingText), "input addresses have an independent retention bound")
+    var bounded = EsploraStream("", { tx: BitcoinTransaction -> return }, collectInputs = true)
+    expect(bounded.feed(text), "collect input addresses while skipping a witness")
+    for (chunk in 0 until 260) expect(bounded.feed(padding), "skip large outgoing witness $chunk")
+    expect(bounded.feed("\"]}],\"vout\":[]}]"), "finish outgoing witness projection larger than 16 MiB")
+    expect(bounded.finish() && bounded.peakTokenBytes < 512, "input collection preserves bounded token memory")
     val tx = { id: string -> $json {"txid": id, "status": {"confirmed": true}} }
     val page: array<Json> = []
     for (n in 0 until 25) page.append(tx("id-$n"))
