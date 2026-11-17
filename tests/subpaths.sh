@@ -47,6 +47,7 @@ done < <(sed -n 's/^"\([^"]*\)" = ".*"$/\1/p' "$root/abla.toml")
 # They work together: a folder, a module of another folder, and what both import once.
 app together <<AB
 import "abla/text"
+import "abla/crypto"
 import $(pkg evm)
 import $(pkg hash/keccak)
 import $(pkg uint256)
