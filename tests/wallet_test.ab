@@ -6,8 +6,8 @@ import "abla/text"
 import "../src/blockchain.ab"
 import "../src/wallet/entry.ab"
 
-// Official vectors where there are any: BIP-32, BIP-39, RFC 6979 and EIP-155's published signatures, RFC 8032, BIP-143. tools/sign_vectors.py's from other implementations otherwise: eth-keys, eth-account,
-// a plain Python Ed25519. Wycheproof's files have no private keys, so its role is the verifier these signatures must get past, which is tested against all of them in signature_test.
+// Official vectors where there are any: BIP-32, BIP-39, RFC 6979 and EIP-155's published signatures, RFC 8032, BIP-143. the files in tests/fixtures/wallet (made once by a Python script, git show e81fe00:tools/sign_vectors.py, since removed) from other implementations otherwise: eth-keys, eth-account,
+// a plain Python Ed25519 (git show e81fe00:tools/stellar_python.py). Wycheproof's files have no private keys, so its role is the verifier these signatures must get past, which is tested against all of them in signature_test.
 fun bigOf(text: string): uint256 = u256FromDecimal(text).value
 fun derOf(value: string): EcdsaSignature = ecdsaParseDer(value)
 fun main {
@@ -137,7 +137,7 @@ fun main {
         expect(back.ok && back.kind == 2 && back.chainId == 11155111, "reads back")
     }
     expectEqual(hexEncode(erc20TransferData("0x3535353535353535353535353535353535353535", u256FromInt(7))), "a9059cbb00000000000000000000000035353535353535353535353535353535353535350000000000000000000000000000000000000000000000000000000000000007", "transfer's data")
-    // Stellar: byte for byte as the Python tool builds and signs, and read back.
+    // Stellar: byte for byte as the Python tool (git show e81fe00:tools/stellar_python.py) built and signed, and read back.
     for (t in v.get("stellar").values) {
         val ops: array<StellarOperation> = []
         for (o in t.get("operations").values) ops.append(StellarOperation(o.getString("kind"), o.getString("destination"), o.getString("asset"), o.getInt("amount")))

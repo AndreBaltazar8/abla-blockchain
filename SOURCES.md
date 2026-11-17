@@ -14,7 +14,7 @@ Where each test's expected values come from.
 | BIP32 | BIP-32 test vectors 1 and 2, public steps | `vectors_test` |
 | BIP-84 addresses | The BIP's published addresses | `vectors_test` |
 | EVM addresses | Hardhat's well-known accounts, from its public mnemonic | `vectors_test` |
-| Testnet addresses | `tools/vectors.py`, an independent BIP32 in Python, from that public mnemonic. It derives privately, and is test tooling only: nothing like it is in `src` | `bitcoin_test` |
+| Testnet addresses | an independent BIP32 in Python from that public mnemonic (derived privately; the script, `git show e81fe00:tools/vectors.py`, was removed from the tree so no Python stays here, and its answers are the constants in the test) | `bitcoin_test` |
 | Descriptor checksum | BIP-380 | `bitcoin_test` |
 | ECDSA on secp256k1 | Project Wycheproof, `ecdsa_secp256k1_sha256_test.json`, whole | `signature_test` |
 | Ed25519 | RFC 8032 tests 1 and 2; Project Wycheproof, `ed25519_test.json`, whole; real Stellar signatures | `signature_test`, `raw_test` |
@@ -29,9 +29,9 @@ Fixtures in `tests/fixtures` are real public answers, captured on 2026-11-01: a 
 `tests/wycheproof` is copied unchanged from [C2SP/wycheproof](https://github.com/C2SP/wycheproof) at commit d17cc89fa5c8f4f4d378b5385ebf75da5d0926c9, `testvectors_v1`, under the Apache License 2.0 of that project. Those test data keep that licence.
 | BIP-39 | The list from bitcoin/bips; trezor/python-mnemonic's `vectors.json`, English | `wallet_test` |
 | BIP-32, private | BIP-32's four test vectors, every chain | `wallet_test` |
-| RFC 6979 on secp256k1 | The well-known "Satoshi Nakamoto" answer; EIP-155's example; 40 from eth-keys by `tools/sign_vectors.py` | `wallet_test` |
-| Ed25519 signing | RFC 8032 tests 1 to 3; 10 from a plain Python RFC 8032 | `wallet_test` |
+| RFC 6979 on secp256k1 | The well-known "Satoshi Nakamoto" answer; EIP-155's example; 40 from eth-keys, made once by a Python script (`git show e81fe00:tools/sign_vectors.py`, removed; the vectors are `tests/fixtures/wallet/vectors.json`) | `wallet_test` |
+| Ed25519 signing | RFC 8032 tests 1 to 3; 10 from a plain Python RFC 8032 (`git show e81fe00:tools/stellar_python.py`, removed) | `wallet_test` |
 | BIP-143 | Its native P2WPKH example: digest and signature | `wallet_test` |
 | EIP-1559 | 4 from eth-account, byte for byte | `wallet_test` |
-| Stellar envelopes | 3 from a separate Python builder, byte for byte; this library's parser | `wallet_test` |
+| Stellar envelopes | 3 from a separate Python builder (the same removed script), byte for byte; this library's parser | `wallet_test` |
 | Accepted by real networks | Signed by `wallet`, and confirmed on 2026-11-02. Signet `5e99a7033969f39e9550129241b979a2a2b535c9bc96f30420a25e5d3efa97b9`; Sepolia USDC `0x627493199b84cabb4e61aea4cbdde74dc514926daac30fa33129b28d06a4c5d7`; Stellar testnet `37842a6f0942edd33237049ab7a6f6d83a9edf50e4b5d52b8375124d33546751` | by hand, from a test wallet |

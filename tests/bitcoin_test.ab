@@ -5,7 +5,7 @@ import "abla/json"
 import "abla/sys/linux"
 import "../src/blockchain.ab"
 
-// Addresses and descriptors from the public Hardhat mnemonic, by an independent BIP32 (tools/vectors.py). Esplora replaying a real signet transaction.
+// Addresses and descriptors from the public Hardhat mnemonic, by an independent BIP32 (a Python script, git show e81fe00:tools/vectors.py: removed, its answers kept here). Esplora replaying a real signet transaction.
 val tpub84 = "tpubDCTawRj1voCsGHoKQopGdxi1UXEfy8eeogsbA7SxDL1j7tvTfwdF6jQNSneAQw5a2x29XY6PWbnKMx68oM7BYoew8eRySvVaLZxkrBzWr4A"
 val tpub44 = "tpubDCxfYwmzJPiUsqJ7KgLWNTr1X3wc1Jm84rbCorAF6o4mhVFMkKKJKMwji1ktUxNcaoMvYiMMmvBkptVp2Yj5KbYJ5M6emVvDnmt6hUFVsmE"
 val tpub49 = "tpubDDKQox3avr2irtLaHRXWeXfTGWMx6HmkDVEV1gHRQsVGzkUonWrTcbcyngPY3NEK9isXaZ1rbdTRDmqH8fWpu5ELFR4VSoqGGTEpYNkbiWh"
