@@ -3,6 +3,7 @@ import "abla/crypto"
 import "abla/json"
 import "abla/sys/linux"
 import "../src/blockchain.ab"
+import "abla/io"
 
 // Project Wycheproof's whole suites for ECDSA on secp256k1 and Ed25519, and RFC 8032's vectors.
 fun file(name: string): Json = jsonParse(linuxReadFile("tests/wycheproof/$name", 4194304), jsonPermissiveLimits).value

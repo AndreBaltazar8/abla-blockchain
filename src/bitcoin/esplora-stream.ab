@@ -3,6 +3,7 @@
 // No whole response or transaction is held. An empty address projects every output; output indices always stay original.
 export import "esplora.ab"
 import "abla/text"
+import "abla/json"
 
 class EsploraFrame(val path: string, val object: bool, val keep: bool, var state: int = 0, var index: int = 0, var key: string = "", val keys: array<string> = [], val values: array<Json> = [])
 class EsploraStream(

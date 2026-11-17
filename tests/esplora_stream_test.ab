@@ -1,5 +1,9 @@
 import "abla/test"
 import "../src/bitcoin/esplora-stream.ab"
+import "abla/json"
+import "../src/net/endpoint.ab"
+import "abla/http"
+import "abla/text"
 
 fun main: int {
     val got: array<BitcoinTransaction> = []
