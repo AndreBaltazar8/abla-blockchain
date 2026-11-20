@@ -1,7 +1,6 @@
 import "abla/crypto"
 import "abla/text"
 import "../bitcoin/bip32.ab"
-import "../curve/secp256k1.ab"
 import "../encoding/base58.ab"
 import "../hash/ripemd160.ab"
 import "secp256k1.ab"

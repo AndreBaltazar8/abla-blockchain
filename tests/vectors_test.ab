@@ -1,6 +1,5 @@
 import "abla/test"
 import "abla/crypto"
-import "abla/text"
 import "../src/blockchain.ab"
 
 fun hex(value: string): string = hexEncode(value)
