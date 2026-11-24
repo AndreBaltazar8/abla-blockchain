@@ -1,0 +1,39 @@
+// Signing time of the wallet's curves: secp256k1 public keys and signatures, Ed25519 signatures, in CPU time of the best of seven rounds.
+// Build release: ablac build tools/bench-signing.ab -o build/bench-signing
+import "abla/crypto"
+import "abla/io"
+import "abla/process/metrics"
+import "../src/wallet/secp256k1.ab"
+import "../src/wallet/ed25519.ab"
+
+fun cpu(): int {
+    val usage = processCpuMicroseconds()
+    usage[0] + usage[1]
+}
+
+fun main: int {
+    val secret = hexDecode("c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721")
+    val digest = hexDecode("4b688df40bcedbe641ddb16ff0a1842d9c67ea1c3bf63f3e0471baa664531d1a")
+    val seed = hexDecode("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60")
+    val rounds = 40
+    var bestKey = 0
+    var bestSign = 0
+    var bestEd = 0
+    var sink = 0
+    for (round in 0 until 7) {
+        var t = cpu()
+        for (i in 0 until rounds) sink = sink + secpPublicKeyOf(secret).size
+        val key = cpu() - t
+        t = cpu()
+        for (i in 0 until rounds) sink = sink + secpSign(secret, digest).r.size
+        val sign = cpu() - t
+        t = cpu()
+        for (i in 0 until rounds) sink = sink + ed25519Sign(seed, "message").size
+        val ed = cpu() - t
+        if (round == 0 || key < bestKey) bestKey = key
+        if (round == 0 || sign < bestSign) bestSign = sign
+        if (round == 0 || ed < bestEd) bestEd = ed
+    }
+    println("secp256k1 public key: ${bestKey / rounds} us, signature: ${bestSign / rounds} us; ed25519 signature: ${bestEd / rounds} us ($sink)")
+    0
+}
