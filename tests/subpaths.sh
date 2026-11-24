@@ -30,7 +30,8 @@ git config --file "$GIT_CONFIG_GLOBAL" url."$package".insteadOf https://github.c
 
 app() { # name, main.ab on stdin
     mkdir -p "$work/$1/src"
-    printf 'name = "%s"\nversion = "0.1.0"\nentry = "src/main.ab"\n' "$1" > "$work/$1/abla.toml"
+    # The wallet holds trusted code (raw big-number arithmetic): a root that imports it grants it, since 0.2.70 (#122 A).
+    printf 'name = "%s"\nversion = "0.1.0"\nentry = "src/main.ab"\ncompileCapabilities = ["trusted.native"]\n\n[dependencyCompileCapabilities]\nabla-blockchain = ["trusted.native"]\n' "$1" > "$work/$1/abla.toml"
     cat > "$work/$1/src/main.ab"
 }
 pkg() { echo "github(\"AndreBaltazar8/abla-blockchain/$1\")"; }
